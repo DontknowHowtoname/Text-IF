@@ -8,3 +8,4 @@ data/IVT_test/**
 pretrained_weights/**
 results/textif_simple_eval/**
 results/textif_simple_eval_sample2/**
+results/**

@@ -1,6 +1,7 @@
 import os
 import csv
 import argparse
+import gc
 import random
 import warnings
 import sys
@@ -85,11 +86,20 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
+def clear_device_cache(device: torch.device):
+    gc.collect()
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif device.type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.empty_cache()
+    gc.collect()
+
+
 def load_model(weights_path: str, device: torch.device):
     model_clip, _ = clip.load("ViT-B/32", device=device)
     model = create_model(model_clip).to(device)
 
-    checkpoint = torch.load(weights_path, map_location=device)
+    checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
 
     clean_state = {}
@@ -240,28 +250,32 @@ def main(args):
     metric_sum = {m: 0.0 for m in METRIC_NAMES}
 
     for img_name in tqdm(image_list, desc="Evaluating"):
+        clear_device_cache(device)
         ir_path = os.path.join(ir_dir, img_name)
         vis_path = os.path.join(vis_dir, img_name)
 
-        ir_tensor = to_tensor_rgb(ir_path).to(device)
-        vis_tensor = to_tensor_rgb(vis_path).to(device)
+        try:
+            ir_tensor = to_tensor_rgb(ir_path).to(device)
+            vis_tensor = to_tensor_rgb(vis_path).to(device)
 
-        if ir_tensor.shape[-2:] != vis_tensor.shape[-2:]:
-            vis_tensor = F.interpolate(vis_tensor, size=ir_tensor.shape[-2:], mode="bilinear", align_corners=True)
+            if ir_tensor.shape[-2:] != vis_tensor.shape[-2:]:
+                vis_tensor = F.interpolate(vis_tensor, size=ir_tensor.shape[-2:], mode="bilinear", align_corners=True)
 
-        with torch.no_grad():
-            fused = model(vis_tensor, ir_tensor, text)
+            with torch.no_grad():
+                fused = model(vis_tensor, ir_tensor, text)
 
-        fused_name = os.path.splitext(img_name)[0] + ".png"
-        save_fused_image(fused, os.path.join(fused_dir, fused_name))
+            fused_name = os.path.splitext(img_name)[0] + ".png"
+            save_fused_image(fused, os.path.join(fused_dir, fused_name))
 
-        metrics = evaluate_metrics(ir_path, vis_path, fused, device)
-        row = {"filename": img_name}
-        row.update(metrics)
-        detail_rows.append(row)
+            metrics = evaluate_metrics(ir_path, vis_path, fused, device)
+            row = {"filename": img_name}
+            row.update(metrics)
+            detail_rows.append(row)
 
-        for m in METRIC_NAMES:
-            metric_sum[m] += metrics[m]
+            for m in METRIC_NAMES:
+                metric_sum[m] += metrics[m]
+        finally:
+            clear_device_cache(device)
 
     details_path = os.path.join(args.output_dir, "evaluation_details.csv")
     summary_path = os.path.join(args.output_dir, "evaluation_summary.csv")
