@@ -52,15 +52,15 @@ class Text_IF_Recon(nn.Module):
         out_enc_L4_A, out_enc_L3_A, out_enc_L2_A, out_enc_L1_A = self.base.encoder_A(inp_img_A)
         out_enc_L4_B, out_enc_L3_B, out_enc_L2_B, out_enc_L1_B = self.base.encoder_B(inp_img_B)
 
-        # ---- FFBlock fusion at levels 1-3 ----
-        fus_L1 = self.ffb_1(out_enc_L1_A, out_enc_L1_B)   # [B, 48, H, W]
-        fus_L2 = self.ffb_2(out_enc_L2_A, out_enc_L2_B)   # [B, 96, H/2, W/2]
-        fus_L3 = self.ffb_3(out_enc_L3_A, out_enc_L3_B)   # [B, 192, H/4, W/4]
+        # ---- FFBlock fusion at levels 1-3 (detach to isolate recon gradients from encoder) ----
+        fus_L1 = self.ffb_1(out_enc_L1_A.detach(), out_enc_L1_B.detach())   # [B, 48, H, W]
+        fus_L2 = self.ffb_2(out_enc_L2_A.detach(), out_enc_L2_B.detach())   # [B, 96, H/2, W/2]
+        fus_L3 = self.ffb_3(out_enc_L3_A.detach(), out_enc_L3_B.detach())   # [B, 192, H/4, W/4]
         fus_feas = [fus_L1, fus_L2, fus_L3]
 
         # 3-level features ordered [L1, L2, L3] for FDBlock
-        enc_A_3lev = [out_enc_L1_A, out_enc_L2_A, out_enc_L3_A]  # visible [48, 96, 192]
-        enc_B_3lev = [out_enc_L1_B, out_enc_L2_B, out_enc_L3_B]  # infrared [48, 96, 192]
+        enc_A_3lev = [out_enc_L1_A.detach(), out_enc_L2_A.detach(), out_enc_L3_A.detach()]  # visible
+        enc_B_3lev = [out_enc_L1_B.detach(), out_enc_L2_B.detach(), out_enc_L3_B.detach()]  # infrared
 
         # ---- Direct reconstruction (encoder preservation constraint) ----
         # ReconHead expects [deepest, mid, shallowest] = [L3, L2, L1]

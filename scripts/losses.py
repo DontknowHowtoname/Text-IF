@@ -445,14 +445,11 @@ class DualReconLoss(nn.Module):
         self.l1 = nn.L1Loss()
 
     def forward(self, I_A_gt, I_B_gt, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis):
-        gray_vis_gt = _rgb2gray(I_A_gt)
-        gray_ir_gt = _rgb2gray(I_B_gt)
-        y_upper_target = Y_Upper(gray_ir_gt, gray_vis_gt, self.upper_weight)
-
-        loss_ir = self.l1(recon_ir, I_B_gt) + correlation_ssim_loss(_rgb2gray(recon_ir), y_upper_target)
-        loss_vis = self.l1(recon_vis, I_A_gt) + correlation_ssim_loss(_rgb2gray(recon_vis), y_upper_target)
-        loss_dec_ir = self.l1(recon_dec_ir, I_B_gt) + correlation_ssim_loss(_rgb2gray(recon_dec_ir), y_upper_target)
-        loss_dec_vis = self.l1(recon_dec_vis, I_A_gt) + correlation_ssim_loss(_rgb2gray(recon_dec_vis), y_upper_target)
+        # Use original images as targets (not Y_Upper) to avoid L1/SSIM conflict
+        loss_ir = self.l1(recon_ir, I_B_gt) + correlation_ssim_loss(_rgb2gray(recon_ir), _rgb2gray(I_B_gt))
+        loss_vis = self.l1(recon_vis, I_A_gt) + correlation_ssim_loss(_rgb2gray(recon_vis), _rgb2gray(I_A_gt))
+        loss_dec_ir = self.l1(recon_dec_ir, I_B_gt) + correlation_ssim_loss(_rgb2gray(recon_dec_ir), _rgb2gray(I_B_gt))
+        loss_dec_vis = self.l1(recon_dec_vis, I_A_gt) + correlation_ssim_loss(_rgb2gray(recon_dec_vis), _rgb2gray(I_A_gt))
 
         total = loss_ir + loss_vis + loss_dec_ir + loss_dec_vis
         return total, loss_ir, loss_vis, loss_dec_ir, loss_dec_vis

@@ -234,8 +234,8 @@ if __name__ == '__main__':
     # Reconstruction loss parameters
     parser.add_argument('--upper_weight', type=float, default=1.3,
                         help='Y_Upper hyper-parameter: contrast amplification (default: 1.3)')
-    parser.add_argument('--recon_weight', type=float, default=1.0,
-                        help='Weight for dual-path reconstruction loss (default: 1.0)')
+    parser.add_argument('--recon_weight', type=float, default=0.2,
+                        help='Weight for dual-path reconstruction loss (default: 0.2)')
 
     opt = parser.parse_args()
 
