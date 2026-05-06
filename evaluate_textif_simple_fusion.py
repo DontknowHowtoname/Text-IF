@@ -164,29 +164,33 @@ def evaluate_metrics(ir_path: str, vis_path: str, fused: torch.Tensor, device: t
     ir_float = np.array(ir_img).astype(np.float32)
     vi_float = np.array(vi_img).astype(np.float32)
 
-    metrics = {
-        "EN": EN_function(f_tensor),
-        "MI": MI_function(ir_int, vi_int, f_int, gray_level=256),
-        "NMI": NMI_function(ir_int, vi_int, f_int, gray_level=256),
-        "SF": SF_function(f_tensor),
-        "AG": AG_function(f_tensor),
-        "SD": SD_function(f_tensor),
-        "CC": CC_function(ir_tensor, vi_tensor, f_tensor),
-        "SCD": SCD_function(ir_tensor, vi_tensor, f_tensor),
-        "PSNR": PSNR_function(ir_tensor, vi_tensor, f_tensor),
-        "MSE": MSE_function(ir_tensor, vi_tensor, f_tensor),
-        "VIF": VIF_function(ir_tensor, vi_tensor, f_tensor),
-        "SSIM": SSIM_function(ir_float, vi_float, f_float),
-        "MS_SSIM": MS_SSIM_function(ir_float, vi_float, f_float),
-        "Qabf": Qabf_function(ir_float, vi_float, f_float),
-        "Nabf": Nabf_function(ir_tensor, vi_tensor, f_tensor),
-        "CE": CE_function(ir_tensor, vi_tensor, f_tensor),
-        "QNCIE": QNCIE_function(ir_tensor, vi_tensor, f_tensor),
-        "TE": TE_function(ir_tensor, vi_tensor, f_tensor),
-        "EI": EI_function(f_tensor),
-        "Qy": Qy_function(ir_tensor, vi_tensor, f_tensor),
-        "Qcb": Qcb_function(ir_tensor, vi_tensor, f_tensor),
-    }
+    try:
+        metrics = {
+            "EN": EN_function(f_tensor),
+            "MI": MI_function(ir_int, vi_int, f_int, gray_level=256),
+            "NMI": NMI_function(ir_int, vi_int, f_int, gray_level=256),
+            "SF": SF_function(f_tensor),
+            "AG": AG_function(f_tensor),
+            "SD": SD_function(f_tensor),
+            "CC": CC_function(ir_tensor, vi_tensor, f_tensor),
+            "SCD": SCD_function(ir_tensor, vi_tensor, f_tensor),
+            "PSNR": PSNR_function(ir_tensor, vi_tensor, f_tensor),
+            "MSE": MSE_function(ir_tensor, vi_tensor, f_tensor),
+            "VIF": VIF_function(ir_tensor, vi_tensor, f_tensor),
+            "SSIM": SSIM_function(ir_float, vi_float, f_float),
+            "MS_SSIM": MS_SSIM_function(ir_float, vi_float, f_float),
+            "Qabf": Qabf_function(ir_float, vi_float, f_float),
+            "Nabf": Nabf_function(ir_tensor, vi_tensor, f_tensor),
+            "CE": CE_function(ir_tensor, vi_tensor, f_tensor),
+            "QNCIE": QNCIE_function(ir_tensor, vi_tensor, f_tensor),
+            "TE": TE_function(ir_tensor, vi_tensor, f_tensor),
+            "EI": EI_function(f_tensor),
+            "Qy": Qy_function(ir_tensor, vi_tensor, f_tensor),
+            "Qcb": Qcb_function(ir_tensor, vi_tensor, f_tensor),
+        }
+    finally:
+        # 显式释放指标计算中的 GPU 张量
+        del f_tensor, ir_tensor, vi_tensor
 
     out = {}
     for k, v in metrics.items():
@@ -249,10 +253,17 @@ def main(args):
     detail_rows = []
     metric_sum = {m: 0.0 for m in METRIC_NAMES}
 
+    # 在推理循环开始前，先释放模型加载阶段可能残留的临时显存
+    clear_device_cache(device)
+
     for img_name in tqdm(image_list, desc="Evaluating"):
-        clear_device_cache(device)
         ir_path = os.path.join(ir_dir, img_name)
         vis_path = os.path.join(vis_dir, img_name)
+
+        ir_tensor = None
+        vis_tensor = None
+        fused = None
+        metrics = None
 
         try:
             ir_tensor = to_tensor_rgb(ir_path).to(device)
@@ -274,7 +285,12 @@ def main(args):
 
             for m in METRIC_NAMES:
                 metric_sum[m] += metrics[m]
+        except Exception as e:
+            print(f"\n[Error] Failed on {img_name}: {e}")
+            continue
         finally:
+            # 显式释放本轮所有中间张量，再清理显存缓存
+            del ir_tensor, vis_tensor, fused, metrics
             clear_device_cache(device)
 
     details_path = os.path.join(args.output_dir, "evaluation_details.csv")
@@ -301,7 +317,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate Text-IF simple_fusion on IVT_test with reproducible sampling")
     parser.add_argument("--data_path", type=str, default="data/IVT_test", help="Path containing ir/ and vis/")
-    parser.add_argument("--weights_path", type=str, default="pretrained_weights/simple_fusion.pth", help="Text-IF model weight path")
+    parser.add_argument("--weights_path", type=str, default="experiments/TextIF_train_20260408-185710/weights/checkpoint.pth", help="Text-IF model weight path")
     parser.add_argument("--output_dir", type=str, default="results/textif_simple_eval", help="Directory to save outputs")
     parser.add_argument("--input_text", type=str, default="This is the infrared and visible light image fusion task.", help="Text prompt")
     parser.add_argument("--sample", type=int, default=20, help="Number of sampled images (0 means all)")

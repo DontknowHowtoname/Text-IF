@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from math import exp
 
 class fusion_loss(nn.Module):
@@ -279,3 +280,231 @@ class L_SSIM(torch.nn.Module):
             self.channel = channel
 
         return ssim(img1, img2, window=window, window_size=self.window_size, size_average=self.size_average)
+
+
+# ====================== Reconstruction Loss (from FreeFusion) ======================
+
+def Y_Upper(y1, y2, hyp_prm=1.3):
+    """Generate upper envelope target from two source images.
+    Combines structural information with amplified magnitude for reconstruction supervision.
+    """
+    C = 0.0001
+    y1_mean = torch.mean(y1)
+    y2_mean = torch.mean(y2)
+    y1_mean_sub = y1 - y1_mean
+    y2_mean_sub = y2 - y2_mean
+
+    c1 = torch.norm(y1_mean_sub)
+    c2 = torch.norm(y2_mean_sub)
+    c_upper = torch.maximum(c1, c2) * hyp_prm
+
+    s1 = y1_mean_sub / (c1 + C)
+    s2 = y2_mean_sub / (c2 + C)
+    s_upper = s1 + s2
+    s_upper = s_upper / (torch.norm(s_upper) + C)
+
+    return c_upper * s_upper
+
+
+def _fspecial_gauss(size, sigma):
+    """Create 2D Gaussian kernel (mimics MATLAB fspecial)."""
+    coords = np.mgrid[-size // 2 + 1:size // 2 + 1, -size // 2 + 1:size // 2 + 1]
+    g = torch.exp(-(torch.from_numpy(coords[0].astype(np.float32)) ** 2 +
+                    torch.from_numpy(coords[1].astype(np.float32)) ** 2) / (2.0 * sigma ** 2))
+    return (g / g.sum()).unsqueeze(0).unsqueeze(0)
+
+
+def correlation_ssim_loss(img1, img2, size=11, sigma=1.5):
+    """Correlation-based SSIM loss (from FreeFusion).
+    Uses only the contrast-structure term for structural similarity.
+    Returns loss (lower is better).
+    """
+    window = _fspecial_gauss(size, sigma).to(img1.device)
+    C2 = (0.03 * 1) ** 2
+
+    mu1 = F.conv2d(img1, window)
+    mu2 = F.conv2d(img2, window)
+    sigma1_sq = F.conv2d(img1 * img1, window) - mu1 * mu1
+    sigma2_sq = F.conv2d(img2 * img2, window) - mu2 * mu2
+    sigma12 = F.conv2d(img1 * img2, window) - mu1 * mu2
+
+    value = (2.0 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2)
+    return 1 - value.mean()
+
+
+class L_Recon(nn.Module):
+    """Reconstruction loss migrated from FreeFusion.
+    Uses Y_Upper target + L1 + correlation-based SSIM.
+    Provides self-supervised reconstruction target without ground truth.
+    """
+    def __init__(self, upper_weight=1.3):
+        super(L_Recon, self).__init__()
+        self.upper_weight = upper_weight
+        self.l1_loss = nn.L1Loss()
+
+    def forward(self, image_visible, image_infrared, image_fused):
+        gray_vis = _rgb2gray(image_visible)
+        gray_ir = _rgb2gray(image_infrared)
+        gray_fused = _rgb2gray(image_fused)
+
+        target = Y_Upper(gray_ir, gray_vis, self.upper_weight)
+
+        l1 = self.l1_loss(gray_fused, target)
+        ssim = correlation_ssim_loss(gray_fused, target)
+        return l1 + ssim
+
+
+def _rgb2gray(image):
+    b, c, h, w = image.size()
+    if c == 1:
+        return image
+    gray = 0.299 * image[:, 0] + 0.587 * image[:, 1] + 0.114 * image[:, 2]
+    return gray.unsqueeze(1)
+
+
+class fusion_recon_loss(fusion_loss):
+    """Extended fusion loss with reconstruction loss."""
+    def __init__(self, upper_weight=1.3):
+        super(fusion_recon_loss, self).__init__()
+        self.loss_func_recon = L_Recon(upper_weight=upper_weight)
+
+    def forward(self, image_visible, image_infrared, image_fused,
+                max_ratio=4, ssim_vis_ratio=1, ssim_ir_ratio=1, ssim_ratio=1,
+                color_ratio=12, text_ratio=10, recon_ratio=5):
+        image_visible_gray = self.rgb2gray(image_visible)
+        image_infrared_gray = self.rgb2gray(image_infrared)
+        image_fused_gray = self.rgb2gray(image_fused)
+
+        loss_max = max_ratio * self.loss_func_Max(image_visible, image_infrared, image_fused)
+        loss_ssim = ssim_ratio * (ssim_vis_ratio * self.loss_func_ssim(image_visible, image_fused)
+                                  + ssim_ir_ratio * self.loss_func_ssim(image_infrared_gray, image_fused_gray))
+        loss_color = color_ratio * self.loss_func_color(image_visible, image_fused)
+        loss_text = text_ratio * self.loss_func_Grad(image_visible_gray, image_infrared_gray, image_fused_gray)
+        loss_recon = recon_ratio * self.loss_func_recon(image_visible, image_infrared, image_fused)
+
+        total_loss = loss_max + loss_ssim + loss_color + loss_text + loss_recon
+        return total_loss, loss_ssim, loss_max, loss_color, loss_text, loss_recon
+
+
+class fusion_recon_prompt_loss(nn.Module):
+    """Prompt-based fusion loss with FreeFusion reconstruction loss."""
+    def __init__(self, upper_weight=1.3):
+        super(fusion_recon_prompt_loss, self).__init__()
+        self.fusion_loss = fusion_recon_loss(upper_weight=upper_weight)
+
+    def forward(self, image_A, image_B, image_fused, task):
+        total_loss = 0
+        total_ssim_loss = 0
+        total_max_loss = 0
+        total_color_loss = 0
+        total_grad_loss = 0
+        total_recon_loss = 0
+        num_tasks = len(task)
+
+        for idx, task_type in enumerate(task):
+            img_A = image_A[idx].unsqueeze(0)
+            img_B = image_B[idx].unsqueeze(0)
+            img_fused = image_fused[idx].unsqueeze(0)
+
+            if task_type == "low_light":
+                losses = self.fusion_loss(img_A, img_B, img_fused,
+                                          max_ratio=8, ssim_ratio=1, text_ratio=10, recon_ratio=5)
+            elif task_type == "over_exposure":
+                losses = self.fusion_loss(img_A, img_B, img_fused,
+                                          max_ratio=4, ssim_ratio=0, text_ratio=2, recon_ratio=3)
+            elif task_type == "ir_low_contrast":
+                losses = self.fusion_loss(img_A, img_B, img_fused,
+                                          max_ratio=8, ssim_ratio=1, text_ratio=10, recon_ratio=5)
+            elif task_type == "ir_noise":
+                losses = self.fusion_loss(img_A, img_B, img_fused,
+                                          max_ratio=6, ssim_ratio=1, text_ratio=10, recon_ratio=4)
+            else:
+                raise ValueError(f"Unknown task type: {task_type}")
+
+            total_loss += losses[0]
+            total_ssim_loss += losses[1]
+            total_max_loss += losses[2]
+            total_color_loss += losses[3]
+            total_grad_loss += losses[4]
+            total_recon_loss += losses[5]
+
+        n = num_tasks
+        return (total_loss / n, total_ssim_loss / n, total_max_loss / n,
+                total_color_loss / n, total_grad_loss / n, total_recon_loss / n)
+
+
+# ====================== Dual-Path Reconstruction Loss ======================
+
+class DualReconLoss(nn.Module):
+    """Loss for 4 reconstruction paths (FFBlock + FDBlock dual-path).
+    Each path: L1(recon, gt) + correlation_ssim(recon_gray, Y_Upper_target)
+    """
+    def __init__(self, upper_weight=1.3):
+        super(DualReconLoss, self).__init__()
+        self.upper_weight = upper_weight
+        self.l1 = nn.L1Loss()
+
+    def forward(self, I_A_gt, I_B_gt, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis):
+        gray_vis_gt = _rgb2gray(I_A_gt)
+        gray_ir_gt = _rgb2gray(I_B_gt)
+        y_upper_target = Y_Upper(gray_ir_gt, gray_vis_gt, self.upper_weight)
+
+        loss_ir = self.l1(recon_ir, I_B_gt) + correlation_ssim_loss(_rgb2gray(recon_ir), y_upper_target)
+        loss_vis = self.l1(recon_vis, I_A_gt) + correlation_ssim_loss(_rgb2gray(recon_vis), y_upper_target)
+        loss_dec_ir = self.l1(recon_dec_ir, I_B_gt) + correlation_ssim_loss(_rgb2gray(recon_dec_ir), y_upper_target)
+        loss_dec_vis = self.l1(recon_dec_vis, I_A_gt) + correlation_ssim_loss(_rgb2gray(recon_dec_vis), y_upper_target)
+
+        total = loss_ir + loss_vis + loss_dec_ir + loss_dec_vis
+        return total, loss_ir, loss_vis, loss_dec_ir, loss_dec_vis
+
+
+class fusion_dual_recon_prompt_loss(nn.Module):
+    """Full loss: original task-specific fusion loss + dual-path reconstruction loss."""
+    def __init__(self, upper_weight=1.3, recon_weight=1.0):
+        super(fusion_dual_recon_prompt_loss, self).__init__()
+        self.fusion_loss = fusion_loss()
+        self.dual_recon_loss = DualReconLoss(upper_weight=upper_weight)
+        self.recon_weight = recon_weight
+
+    def forward(self, I_A_gt, I_B_gt, fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, task):
+        # Fusion loss (per-sample, task-specific)
+        total_fusion = 0
+        total_ssim = 0
+        total_max = 0
+        total_color = 0
+        total_text = 0
+        n = len(task)
+
+        for idx, task_type in enumerate(task):
+            img_A = I_A_gt[idx].unsqueeze(0)
+            img_B = I_B_gt[idx].unsqueeze(0)
+            img_f = fused[idx].unsqueeze(0)
+
+            if task_type == "low_light":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=8, ssim_ratio=1, text_ratio=10)
+            elif task_type == "over_exposure":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=4, ssim_ratio=0, text_ratio=2)
+            elif task_type == "ir_low_contrast":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=8, ssim_ratio=1, text_ratio=10)
+            elif task_type == "ir_noise":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=6, ssim_ratio=1, text_ratio=10)
+            else:
+                raise ValueError(f"Unknown task type: {task_type}")
+
+            total_fusion += loss
+            total_ssim += ssim_l
+            total_max += max_l
+            total_color += color_l
+            total_text += text_l
+
+        # Dual-path reconstruction loss (shared across tasks)
+        recon_total, _, _, _, _ = self.dual_recon_loss(
+            I_A_gt, I_B_gt, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis)
+
+        total = total_fusion / n + self.recon_weight * recon_total
+        return (total, total_ssim / n, total_max / n, total_color / n,
+                total_text / n, self.recon_weight * recon_total)
