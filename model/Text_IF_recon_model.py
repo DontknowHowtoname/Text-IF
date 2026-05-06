@@ -1,6 +1,6 @@
 """
 Text_IF_Recon: Extends Text-IF with FFBlock + FDBlock + dual-path reconstruction.
-FFBlock replaces Fusion_Embed at levels 1-3, unifying fusion and reconstruction paths.
+Original Text-IF fusion path is fully preserved.
 """
 import torch
 import torch.nn as nn
@@ -52,13 +52,13 @@ class Text_IF_Recon(nn.Module):
         out_enc_L4_A, out_enc_L3_A, out_enc_L2_A, out_enc_L1_A = self.base.encoder_A(inp_img_A)
         out_enc_L4_B, out_enc_L3_B, out_enc_L2_B, out_enc_L1_B = self.base.encoder_B(inp_img_B)
 
-        # ---- FFBlock replaces feature_fusion at levels 1-3 (shared by fusion and recon paths) ----
-        fus_L1 = self.ffb_1(out_enc_L1_A, out_enc_L1_B)   # [B, 48, H, W]
-        fus_L2 = self.ffb_2(out_enc_L2_A, out_enc_L2_B)   # [B, 96, H/2, W/2]
-        fus_L3 = self.ffb_3(out_enc_L3_A, out_enc_L3_B)   # [B, 192, H/4, W/4]
+        # ---- FFBlock fusion at levels 1-3 (detach to isolate recon gradients from encoder) ----
+        fus_L1 = self.ffb_1(out_enc_L1_A.detach(), out_enc_L1_B.detach())   # [B, 48, H, W]
+        fus_L2 = self.ffb_2(out_enc_L2_A.detach(), out_enc_L2_B.detach())   # [B, 96, H/2, W/2]
+        fus_L3 = self.ffb_3(out_enc_L3_A.detach(), out_enc_L3_B.detach())   # [B, 192, H/4, W/4]
         fus_feas = [fus_L1, fus_L2, fus_L3]
 
-        # Detached encoder features for FDBlock subtraction and direct reconstruction
+        # 3-level features ordered [L1, L2, L3] for FDBlock
         enc_A_3lev = [out_enc_L1_A.detach(), out_enc_L2_A.detach(), out_enc_L3_A.detach()]  # visible
         enc_B_3lev = [out_enc_L1_B.detach(), out_enc_L2_B.detach(), out_enc_L3_B.detach()]  # infrared
 
@@ -75,7 +75,7 @@ class Text_IF_Recon(nn.Module):
         recon_dec_ir = self.recon_head([dec_ir_feas[2], dec_ir_feas[1], dec_ir_feas[0]])
         recon_dec_vis = self.recon_head([dec_vis_feas[2], dec_vis_feas[1], dec_vis_feas[0]])
 
-        # ---- Fusion path (FFBlock output used at L1-L3, cross-attention at L4) ----
+        # ---- Original fusion path (unchanged from Text_IF.forward) ----
         out_enc_L4_A, out_enc_L4_B = self.base.cross_attention(out_enc_L4_A, out_enc_L4_B)
         out_enc_L4 = self.base.feature_fusion_4(out_enc_L4_A, out_enc_L4_B)
         out_enc_L4 = self.base.attention_spatial(out_enc_L4)
@@ -85,19 +85,22 @@ class Text_IF_Recon(nn.Module):
 
         inp_dec_L3 = self.base.up4_3(out_dec_L4)
         inp_dec_L3 = self.base.prompt_guidance_3(inp_dec_L3, text_features)
-        inp_dec_L3 = torch.cat([inp_dec_L3, fus_L3], 1)  # FFBlock replaces feature_fusion_3
+        out_enc_L3 = self.base.feature_fusion_3(out_enc_L3_A, out_enc_L3_B)
+        inp_dec_L3 = torch.cat([inp_dec_L3, out_enc_L3], 1)
         inp_dec_L3 = self.base.reduce_chan_level3(inp_dec_L3)
         out_dec_L3 = self.base.decoder_level3(inp_dec_L3)
 
         inp_dec_L2 = self.base.up3_2(out_dec_L3)
         inp_dec_L2 = self.base.prompt_guidance_2(inp_dec_L2, text_features)
-        inp_dec_L2 = torch.cat([inp_dec_L2, fus_L2], 1)  # FFBlock replaces feature_fusion_2
+        out_enc_L2 = self.base.feature_fusion_2(out_enc_L2_A, out_enc_L2_B)
+        inp_dec_L2 = torch.cat([inp_dec_L2, out_enc_L2], 1)
         inp_dec_L2 = self.base.reduce_chan_level2(inp_dec_L2)
         out_dec_L2 = self.base.decoder_level2(inp_dec_L2)
 
         inp_dec_L1 = self.base.up2_1(out_dec_L2)
         inp_dec_L1 = self.base.prompt_guidance_1(inp_dec_L1, text_features)
-        inp_dec_L1 = torch.cat([inp_dec_L1, fus_L1], 1)  # FFBlock replaces feature_fusion_1
+        out_enc_L1 = self.base.feature_fusion_1(out_enc_L1_A, out_enc_L1_B)
+        inp_dec_L1 = torch.cat([inp_dec_L1, out_enc_L1], 1)
         out_dec_L1 = self.base.decoder_level1(inp_dec_L1)
 
         fused = self.base.output(self.base.refinement(out_dec_L1))
