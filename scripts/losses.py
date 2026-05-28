@@ -505,3 +505,84 @@ class fusion_dual_recon_prompt_loss(nn.Module):
         total = total_fusion / n + self.recon_weight * recon_total
         return (total, total_ssim / n, total_max / n, total_color / n,
                 total_text / n, self.recon_weight * recon_total)
+
+
+# ====================== Mask-Enhanced Object Loss ======================
+
+class fusion_dual_recon_mask_loss(nn.Module):
+    """Full loss: task-specific fusion + dual-path reconstruction + mask-enhanced object loss.
+
+    The mask-enhanced component applies stronger brightness targets in object regions
+    and preservation constraints in background regions.
+    When mask is all zeros, the mask loss is zero (no effect).
+    """
+    def __init__(self, upper_weight=1.3, recon_weight=1.0,
+                 enhance_factor=1.5, bg_factor=0.5, mask_loss_weight=1.0):
+        super(fusion_dual_recon_mask_loss, self).__init__()
+        self.fusion_loss = fusion_loss()
+        self.dual_recon_loss = DualReconLoss(upper_weight=upper_weight)
+        self.recon_weight = recon_weight
+        self.enhance_factor = enhance_factor
+        self.bg_factor = bg_factor
+        self.mask_loss_weight = mask_loss_weight
+
+    def forward(self, I_A_gt, I_B_gt, fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis,
+                task, mask=None):
+        # --- Fusion loss (per-sample, task-specific) ---
+        total_fusion = 0
+        total_ssim = 0
+        total_max = 0
+        total_color = 0
+        total_text = 0
+        n = len(task)
+
+        for idx, task_type in enumerate(task):
+            img_A = I_A_gt[idx].unsqueeze(0)
+            img_B = I_B_gt[idx].unsqueeze(0)
+            img_f = fused[idx].unsqueeze(0)
+
+            if task_type == "low_light":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=8, ssim_ratio=1, text_ratio=10)
+            elif task_type == "over_exposure":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=4, ssim_ratio=0, text_ratio=2)
+            elif task_type == "ir_low_contrast":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=8, ssim_ratio=1, text_ratio=10)
+            elif task_type == "ir_noise":
+                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                    img_A, img_B, img_f, max_ratio=6, ssim_ratio=1, text_ratio=10)
+            else:
+                raise ValueError(f"Unknown task type: {task_type}")
+
+            total_fusion += loss
+            total_ssim += ssim_l
+            total_max += max_l
+            total_color += color_l
+            total_text += text_l
+
+        # --- Dual-path reconstruction loss ---
+        recon_total, _, _, _, _ = self.dual_recon_loss(
+            I_A_gt, I_B_gt, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis)
+
+        # --- Mask-enhanced object loss ---
+        mask_loss_val = torch.zeros(1, device=fused.device)
+        if mask is not None and mask.sum() > 0:
+            # Object region: encourage stronger brightness
+            obj_target = torch.max(I_A_gt, I_B_gt)
+            loss_obj = self.enhance_factor * F.l1_loss(
+                fused * mask, obj_target * mask)
+
+            # Background: preserve original visible image (avoid over-modification)
+            loss_bg = self.bg_factor * F.l1_loss(
+                fused * (1 - mask), I_A_gt * (1 - mask))
+
+            mask_loss_val = loss_obj + loss_bg
+
+        total = (total_fusion / n
+                 + self.recon_weight * recon_total
+                 + self.mask_loss_weight * mask_loss_val)
+
+        return (total, total_ssim / n, total_max / n, total_color / n,
+                total_text / n, self.recon_weight * recon_total, mask_loss_val)
