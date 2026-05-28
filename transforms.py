@@ -20,10 +20,10 @@ class Compose(object):
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, image, target, image_gt, target_gt, image_full):
+    def __call__(self, image, target, image_gt, target_gt, image_full, mask=None):
         for t in self.transforms:
-            image, target, image_gt, target_gt, image_full = t(image, target, image_gt, target_gt, image_full)
-        return image, target, image_gt, target_gt, image_full
+            image, target, image_gt, target_gt, image_full, mask = t(image, target, image_gt, target_gt, image_full, mask)
+        return image, target, image_gt, target_gt, image_full, mask
 
 
 class Resize(object):
@@ -43,7 +43,7 @@ class Resize_16(object):
     def __init__(self):
         pass
 
-    def __call__(self, image, target, image_gt, target_gt, image_full):
+    def __call__(self, image, target, image_gt, target_gt, image_full, mask=None):
         width, height = image.size
 
         new_width = (width // 16) * 16
@@ -54,55 +54,65 @@ class Resize_16(object):
         image_gt = F.resize(image_gt, (new_height, new_width), interpolation=T.InterpolationMode.NEAREST)
         target_gt = F.resize(target_gt, (new_height, new_width), interpolation=T.InterpolationMode.NEAREST)
         image_full = F.resize(image_full, (new_height, new_width), interpolation=T.InterpolationMode.NEAREST)
+        if mask is not None:
+            mask = F.resize(mask, (new_height, new_width), interpolation=T.InterpolationMode.NEAREST)
 
-        return image, target, image_gt, target_gt, image_full
+        return image, target, image_gt, target_gt, image_full, mask
 
 
 class RandomHorizontalFlip(object):
     def __init__(self, flip_prob):
         self.flip_prob = flip_prob
 
-    def __call__(self, image, target, image_gt, target_gt, image_full):
+    def __call__(self, image, target, image_gt, target_gt, image_full, mask=None):
         if random.random() < self.flip_prob:
             image = F.hflip(image)
             target = F.hflip(target)
             image_gt = F.hflip(image_gt)
             target_gt = F.hflip(target_gt)
             image_full = F.hflip(image_full)
-        return image, target, image_gt, target_gt, image_full
+            if mask is not None:
+                mask = F.hflip(mask)
+        return image, target, image_gt, target_gt, image_full, mask
 
 
 class RandomVerticalFlip(object):
     def __init__(self, flip_prob):
         self.flip_prob = flip_prob
 
-    def __call__(self, image, target, image_gt, target_gt, image_full):
+    def __call__(self, image, target, image_gt, target_gt, image_full, mask=None):
         if random.random() < self.flip_prob:
             image = F.vflip(image)
             target = F.vflip(target)
             image_gt = F.vflip(image_gt)
             target_gt = F.vflip(target_gt)
             image_full = F.vflip(image_full)
-        return image, target, image_gt, target_gt, image_full
+            if mask is not None:
+                mask = F.vflip(mask)
+        return image, target, image_gt, target_gt, image_full, mask
 
 
 class RandomCrop(object):
     def __init__(self, size):
         self.size = size
 
-    def __call__(self, image, target, image_gt, target_gt, image_full):
+    def __call__(self, image, target, image_gt, target_gt, image_full, mask=None):
         image = pad_if_smaller(image, self.size)
         target = pad_if_smaller(target, self.size)
         image_gt = pad_if_smaller(image_gt, self.size)
         target_gt = pad_if_smaller(target_gt, self.size)
         image_full = pad_if_smaller(image_full, self.size)
+        if mask is not None:
+            mask = pad_if_smaller(mask, self.size, fill=0)
         crop_params = T.RandomCrop.get_params(image, (self.size, self.size))
         image = F.crop(image, *crop_params)
         target = F.crop(target, *crop_params)
         image_gt = F.crop(image_gt, *crop_params)
         target_gt = F.crop(target_gt, *crop_params)
         image_full = F.crop(image_full, *crop_params)
-        return image, target, image_gt, target_gt, image_full
+        if mask is not None:
+            mask = F.crop(mask, *crop_params)
+        return image, target, image_gt, target_gt, image_full, mask
 
 class CenterCrop(object):
     def __init__(self, size):
@@ -117,10 +127,12 @@ class CenterCrop(object):
 
 
 class ToTensor(object):
-    def __call__(self, image, target, image_gt, target_gt, image_full):
+    def __call__(self, image, target, image_gt, target_gt, image_full, mask=None):
         image = F.to_tensor(image)
         target = F.to_tensor(target)
         image_gt = F.to_tensor(image_gt)
         target_gt = F.to_tensor(target_gt)
         image_full = F.to_tensor(image_full)
-        return image, target, image_gt, target_gt, image_full
+        if mask is not None:
+            mask = F.to_tensor(mask)
+        return image, target, image_gt, target_gt, image_full, mask
