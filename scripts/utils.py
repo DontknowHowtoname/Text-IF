@@ -513,10 +513,11 @@ def evaluate_recon(model, data_loader, device, epoch, lr, filefold_path):
 # ====================== Training/Eval with Dual-Path Reconstruction ======================
 
 def train_one_epoch_recon_dual(model, model_clip, optimizer, lr_scheduler, data_loader, device, epoch,
-                                recon_weight=1.0):
+                                recon_weight=1.0, max_ratio=None, ssim_ratio=None):
     model.train()
     model_clip.eval()
-    loss_function = fusion_dual_recon_prompt_loss(recon_weight=recon_weight)
+    loss_function = fusion_dual_recon_prompt_loss(recon_weight=recon_weight,
+                                                  max_ratio=max_ratio, ssim_ratio=ssim_ratio)
 
     if torch.cuda.is_available():
         loss_function = loss_function.to(device)
@@ -592,8 +593,9 @@ def train_one_epoch_recon_dual(model, model_clip, optimizer, lr_scheduler, data_
 
 
 @torch.no_grad()
-def evaluate_recon_dual(model, data_loader, device, epoch, lr, filefold_path):
-    loss_function = fusion_dual_recon_prompt_loss()
+def evaluate_recon_dual(model, data_loader, device, epoch, lr, filefold_path,
+                        max_ratio=None, ssim_ratio=None):
+    loss_function = fusion_dual_recon_prompt_loss(max_ratio=max_ratio, ssim_ratio=ssim_ratio)
     model.eval()
 
     accu_total_loss = torch.zeros(1).to(device)

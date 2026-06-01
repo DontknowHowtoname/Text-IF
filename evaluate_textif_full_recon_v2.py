@@ -262,12 +262,17 @@ def prepare_image_list(data_path: str, sample: int, seed: int) -> List[str]:
     ir_images = natsorted([x for x in os.listdir(ir_dir) if x.lower().endswith(SUPPORTED_EXTS)])
     vis_images = natsorted([x for x in os.listdir(vis_dir) if x.lower().endswith(SUPPORTED_EXTS)])
 
-    common_names = set(ir_images) & set(vis_images)
-    image_list = natsorted(list(common_names))
+    # Match by stem (filename without extension) to support different
+    # extensions across IR / VIS dirs (e.g. RoadScene: .png vs .jpg)
+    ir_stems = {os.path.splitext(f)[0]: f for f in ir_images}
+    vis_stems = {os.path.splitext(f)[0]: f for f in vis_images}
+    common_stems = set(ir_stems.keys()) & set(vis_stems.keys())
+
+    image_list = natsorted(list(common_stems))
 
     if not image_list:
         raise RuntimeError(
-            f"No matching image pairs found.\n"
+            f"No matching image pairs found (matched by stem).\n"
             f"  IR dir : {ir_dir}  ({len(ir_images)} images)\n"
             f"  VIS dir: {vis_dir}  ({len(vis_images)} images)"
         )
@@ -278,7 +283,7 @@ def prepare_image_list(data_path: str, sample: int, seed: int) -> List[str]:
         image_list = natsorted(image_list)
         print(f"[Sample Mode] Randomly sampled {sample} images with seed={seed}")
 
-    return image_list, ir_dir, vis_dir
+    return image_list, ir_dir, vis_dir, ir_stems, vis_stems
 
 
 def write_csv(path: str, fieldnames: List[str], rows: List[Dict]):
@@ -296,7 +301,7 @@ def main(args):
     fused_dir = os.path.join(args.output_dir, "fused")
     os.makedirs(fused_dir, exist_ok=True)
 
-    image_list, ir_dir, vis_dir = prepare_image_list(args.data_path, args.sample, args.seed)
+    image_list, ir_dir, vis_dir, ir_stems, vis_stems = prepare_image_list(args.data_path, args.sample, args.seed)
 
     print(f"Using device: {device}")
     print(f"IR dir : {ir_dir}")
@@ -314,8 +319,8 @@ def main(args):
     for img_name in tqdm(image_list, desc="Evaluating"):
         clear_device_cache(device)
 
-        ir_path = os.path.join(ir_dir, img_name)
-        vis_path = os.path.join(vis_dir, img_name)
+        ir_path = os.path.join(ir_dir, ir_stems[img_name])
+        vis_path = os.path.join(vis_dir, vis_stems[img_name])
 
         ir_tensor = None
         vis_tensor = None

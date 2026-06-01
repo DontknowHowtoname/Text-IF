@@ -457,11 +457,21 @@ class DualReconLoss(nn.Module):
 
 class fusion_dual_recon_prompt_loss(nn.Module):
     """Full loss: original task-specific fusion loss + dual-path reconstruction loss."""
-    def __init__(self, upper_weight=1.3, recon_weight=1.0):
+    def __init__(self, upper_weight=1.3, recon_weight=1.0, max_ratio=None, ssim_ratio=None):
         super(fusion_dual_recon_prompt_loss, self).__init__()
         self.fusion_loss = fusion_loss()
         self.dual_recon_loss = DualReconLoss(upper_weight=upper_weight)
         self.recon_weight = recon_weight
+        self.max_ratio = max_ratio
+        self.ssim_ratio = ssim_ratio
+
+    # Per-task default ratios
+    _TASK_DEFAULTS = {
+        "low_light":        {"max_ratio": 8, "ssim_ratio": 1,  "text_ratio": 10},
+        "over_exposure":    {"max_ratio": 4, "ssim_ratio": 0,  "text_ratio": 2},
+        "ir_low_contrast":  {"max_ratio": 8, "ssim_ratio": 1,  "text_ratio": 10},
+        "ir_noise":         {"max_ratio": 6, "ssim_ratio": 1,  "text_ratio": 10},
+    }
 
     def forward(self, I_A_gt, I_B_gt, fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, task):
         # Fusion loss (per-sample, task-specific)
@@ -477,20 +487,11 @@ class fusion_dual_recon_prompt_loss(nn.Module):
             img_B = I_B_gt[idx].unsqueeze(0)
             img_f = fused[idx].unsqueeze(0)
 
-            if task_type == "low_light":
-                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
-                    img_A, img_B, img_f, max_ratio=8, ssim_ratio=1, text_ratio=10)
-            elif task_type == "over_exposure":
-                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
-                    img_A, img_B, img_f, max_ratio=4, ssim_ratio=0, text_ratio=2)
-            elif task_type == "ir_low_contrast":
-                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
-                    img_A, img_B, img_f, max_ratio=8, ssim_ratio=1, text_ratio=10)
-            elif task_type == "ir_noise":
-                loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
-                    img_A, img_B, img_f, max_ratio=6, ssim_ratio=1, text_ratio=10)
-            else:
-                raise ValueError(f"Unknown task type: {task_type}")
+            defaults = self._TASK_DEFAULTS[task_type]
+            mr = self.max_ratio if self.max_ratio is not None else defaults["max_ratio"]
+            sr = self.ssim_ratio if self.ssim_ratio is not None else defaults["ssim_ratio"]
+            loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
+                img_A, img_B, img_f, max_ratio=mr, ssim_ratio=sr, text_ratio=defaults["text_ratio"])
 
             total_fusion += loss
             total_ssim += ssim_l

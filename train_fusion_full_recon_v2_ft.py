@@ -161,7 +161,8 @@ def main(args):
         start_epoch = checkpoint['epoch'] + 1
 
     print(f"Fine-tuning Text_IF_Recon v2 from textif-me "
-          f"(recon_weight={args.recon_weight}, lr={args.lr}, frozen_encoders=True)")
+          f"(recon_weight={args.recon_weight}, lr={args.lr}, frozen_encoders=True, "
+          f"max_ratio={args.max_ratio}, ssim_ratio={args.ssim_ratio})")
 
     for epoch in range(start_epoch, args.epochs):
         # train
@@ -174,7 +175,9 @@ def main(args):
             lr_scheduler=lr_scheduler,
             device=device,
             epoch=epoch,
-            recon_weight=args.recon_weight)
+            recon_weight=args.recon_weight,
+            max_ratio=args.max_ratio,
+            ssim_ratio=args.ssim_ratio)
 
         tb_writer.add_scalar("train_total_loss", train_loss, epoch)
         tb_writer.add_scalar("train_ssim_loss", train_ssim_loss, epoch)
@@ -189,7 +192,9 @@ def main(args):
                 model=model,
                 data_loader=val_loader,
                 device=device,
-                epoch=epoch, lr=lr, filefold_path=file_img_path)
+                epoch=epoch, lr=lr, filefold_path=file_img_path,
+                max_ratio=args.max_ratio,
+                ssim_ratio=args.ssim_ratio)
 
             tb_writer.add_scalar("val_total_loss", val_loss, epoch)
             tb_writer.add_scalar("val_ssim_loss", val_ssim_loss, epoch)
@@ -256,6 +261,10 @@ if __name__ == '__main__':
                         help='Y_Upper hyper-parameter: contrast amplification (default: 1.3)')
     parser.add_argument('--recon_weight', type=float, default=0.05,
                         help='Weight for dual-path reconstruction loss (default: 0.05)')
+    parser.add_argument('--max_ratio', type=float, default=None,
+                        help='Override max_ratio for all tasks (default: None = per-task defaults)')
+    parser.add_argument('--ssim_ratio', type=float, default=None,
+                        help='Override ssim_ratio for all tasks (default: None = per-task defaults)')
 
     opt = parser.parse_args()
     main(opt)
