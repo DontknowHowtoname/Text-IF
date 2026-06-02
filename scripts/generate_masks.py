@@ -6,15 +6,25 @@ For each image in the dataset:
 3. Cosine similarity with the object text filters relevant masks
 4. Filtered masks are merged into a single binary mask and saved as PNG
 
-Usage:
-    python scripts/generate_masks.py \
-        --sam_ckpt references/segment-anything/checkpoints/sam_vit_h_4b8939.pth \
-        --data_root dataset/EMS_lite \
-        --obj_text "person" \
-        --clip_threshold 0.22
+Supports two directory layouts:
+  1) EMS_lite (multi-task, multi-split):
+        {data_root}/{task}/{split}/Visible/
+        masks -> {data_root}/{task}/{split}/masks/
+     e.g. dataset/EMS_lite/Low_light/train/Visible/
+  2) Flat test set (vis/ or ir/ at root):
+        {data_root}/vis/   (or visible/)
+        masks -> {data_root}/masks/
+     e.g. data/IVT_test/vis/
 
-Output structure:
-    dataset/EMS_lite/Low_light/train/masks/0001.png  (255=object, 0=background)
+Usage:
+    # EMS_lite (auto-detected)
+    python scripts/generate_masks.py --data_root dataset/EMS_lite --obj_text "person"
+
+    # Flat test set (auto-detected)
+    python scripts/generate_masks.py --data_root data/IVT_test --obj_text "person"
+
+Output:
+    masks/0001.png  (255=object, 0=background)
 """
 import os
 import sys
@@ -166,11 +176,72 @@ def process_directory(generator, clip_model, clip_preprocess, image_dir, mask_ou
     print(f"  Done. {no_mask_count}/{len(images)} images have no object mask.")
 
 
+def detect_dirs(data_root):
+    """Auto-detect directory layout and return list of (image_dir, mask_dir) pairs.
+
+    Layout 1 - EMS_lite (multi-task, multi-split):
+        data_root/{task}/{split}/Visible/
+        -> data_root/{task}/{split}/masks/
+
+    Layout 2 - Flat test set (vis/ or visible/ at root):
+        data_root/vis/  (or visible/)
+        -> data_root/masks/
+    """
+    jobs = []
+
+    # --- Try Layout 1: EMS_lite ---
+    tasks = ['Low_light', 'Over_exposure', 'IR_Low_contrast', 'IR_Noise']
+    splits = [('train', 'Visible'), ('eval', 'Visible')]
+    found_ems = False
+
+    for task in tasks:
+        for split, subdir in splits:
+            image_dir = os.path.join(data_root, task, split, subdir)
+            if os.path.isdir(image_dir):
+                mask_dir = os.path.join(data_root, task, split, 'masks')
+                jobs.append((image_dir, mask_dir, f"Task: {task}, Split: {split}"))
+                found_ems = True
+
+    if found_ems:
+        return jobs, "EMS_lite (multi-task)"
+
+    # --- Try Layout 2: Flat test set ---
+    vis_candidates = ['vis', 'visible', 'Vis', 'Visible', 'vi']
+    ir_candidates = ['ir', 'infrared', 'Ir', 'Infrared']
+
+    for vis_name in vis_candidates:
+        vis_dir = os.path.join(data_root, vis_name)
+        if os.path.isdir(vis_dir):
+            mask_dir = os.path.join(data_root, 'masks')
+            jobs.append((vis_dir, mask_dir, f"Flat (vis={vis_name})"))
+            break
+
+    if not jobs:
+        # Also try IR dir as fallback (infrared images often contain objects)
+        for ir_name in ir_candidates:
+            ir_dir = os.path.join(data_root, ir_name)
+            if os.path.isdir(ir_dir):
+                mask_dir = os.path.join(data_root, 'masks')
+                jobs.append((ir_dir, mask_dir, f"Flat (ir={ir_name})"))
+                break
+
+    if jobs:
+        return jobs, "Flat test set"
+
+    raise FileNotFoundError(
+        f"Cannot detect directory layout in: {data_root}\n"
+        f"Expected either:\n"
+        f"  EMS_lite: {{data_root}}/{{task}}/{{split}}/Visible/\n"
+        f"  Flat:     {{data_root}}/vis/ or {{data_root}}/visible/"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate object masks using SAM + CLIP")
     parser.add_argument('--sam_ckpt', type=str,
                         default='references/segment-anything/checkpoints/sam_vit_h_4b8939.pth')
-    parser.add_argument('--data_root', type=str, default='dataset/EMS_lite')
+    parser.add_argument('--data_root', type=str, default='dataset/EMS_lite',
+                        help='Dataset root directory (EMS_lite or flat test set)')
     parser.add_argument('--obj_text', type=str, default='person',
                         help='Object category text for CLIP filtering')
     parser.add_argument('--clip_threshold', type=float, default=0.22,
@@ -180,28 +251,23 @@ def main():
 
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
+    # Detect directory layout
+    jobs, layout_type = detect_dirs(args.data_root)
+    print(f"Detected layout: {layout_type}")
+    print(f"Found {len(jobs)} directory pair(s) to process")
+
     # Load models
     generator = load_sam_generator(args.sam_ckpt, device)
     clip_model, clip_preprocess = load_clip_model(device)
 
-    # Process each dataset task
-    tasks = ['Low_light', 'Over_exposure', 'IR_Low_contrast', 'IR_Noise']
-    splits = [('train', 'Visible'), ('eval', 'Visible')]
-
-    for task in tasks:
-        for split, subdir in splits:
-            image_dir = os.path.join(args.data_root, task, split, subdir)
-            mask_dir = os.path.join(args.data_root, task, split, 'masks')
-
-            if not os.path.exists(image_dir):
-                print(f"  Skipping (not found): {image_dir}")
-                continue
-
-            print(f"\n=== Task: {task}, Split: {split} ===")
-            process_directory(
-                generator, clip_model, clip_preprocess,
-                image_dir, mask_dir, args.obj_text, device, args.clip_threshold
-            )
+    for image_dir, mask_dir, desc in jobs:
+        print(f"\n=== {desc} ===")
+        print(f"  Images: {image_dir}")
+        print(f"  Masks:  {mask_dir}")
+        process_directory(
+            generator, clip_model, clip_preprocess,
+            image_dir, mask_dir, args.obj_text, device, args.clip_threshold
+        )
 
     print("\nMask generation complete!")
 
