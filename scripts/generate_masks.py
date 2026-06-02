@@ -29,6 +29,7 @@ Output:
 import os
 import sys
 import argparse
+import random
 import numpy as np
 from PIL import Image
 import torch
@@ -137,12 +138,17 @@ def merge_masks(masks, height, width):
 
 
 def process_directory(generator, clip_model, clip_preprocess, image_dir, mask_out_dir,
-                      obj_text, device, threshold):
-    """Process all images in a directory and save masks."""
+                      obj_text, device, threshold, sample=0, seed=42):
+    """Process images in a directory and save masks."""
     os.makedirs(mask_out_dir, exist_ok=True)
 
     supported = [".jpg", ".JPG", ".png", ".PNG", ".bmp", ".tif", ".TIF"]
     images = sorted([f for f in os.listdir(image_dir) if os.path.splitext(f)[-1] in supported])
+
+    if sample > 0 and sample < len(images):
+        random.seed(seed)
+        images = sorted(random.sample(images, sample))
+        print(f"  [Sample Mode] Randomly sampled {sample} images with seed={seed}")
 
     print(f"  Processing {len(images)} images from {image_dir}")
     no_mask_count = 0
@@ -247,6 +253,10 @@ def main():
     parser.add_argument('--clip_threshold', type=float, default=0.22,
                         help='CLIP similarity threshold for mask filtering')
     parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--sample', type=int, default=0,
+                        help='Number of images to sample per directory (0 = all)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for sampling')
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -266,7 +276,8 @@ def main():
         print(f"  Masks:  {mask_dir}")
         process_directory(
             generator, clip_model, clip_preprocess,
-            image_dir, mask_dir, args.obj_text, device, args.clip_threshold
+            image_dir, mask_dir, args.obj_text, device, args.clip_threshold,
+            sample=args.sample, seed=args.seed
         )
 
     print("\nMask generation complete!")
