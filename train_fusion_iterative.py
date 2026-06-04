@@ -138,6 +138,9 @@ def main(args):
         assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
         weights_dict = torch.load(args.weights, map_location=device)["model"]
 
+        # Clean DataParallel prefix
+        weights_dict = {k.replace("module.", ""): v for k, v in weights_dict.items()}
+
         has_base_prefix = any(k.startswith('base.') for k in weights_dict)
         if not has_base_prefix:
             weights_dict = {f'base.{k}': v for k, v in weights_dict.items()}

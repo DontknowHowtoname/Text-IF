@@ -94,8 +94,9 @@ class Text_IF_Recon_v4(nn.Module):
 
     def _fusion_pass(self, cached, text_features, mask=None):
         """Run decoder path once with optional mask."""
-        out_enc_L4_A = cached['out_enc_L4_A']
-        out_enc_L4_B = cached['out_enc_L4_B']
+        # Clone L4 features to prevent in-place mutation across passes
+        out_enc_L4_A = cached['out_enc_L4_A'].clone()
+        out_enc_L4_B = cached['out_enc_L4_B'].clone()
         fus_L1 = cached['fus_L1']
         fus_L2 = cached['fus_L2']
         fus_L3 = cached['fus_L3']
