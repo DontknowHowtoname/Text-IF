@@ -24,6 +24,8 @@ from tqdm import tqdm
 import clip
 
 from model.Text_IF_recon_model_3 import Text_IF_Recon_v3 as create_model
+from model.Text_IF_recon_model_4 import Text_IF_Recon_v4 as create_model_v4
+from model.sam_iterative_filter import IterativeSAMFilter
 
 METRIC_DIR = os.path.join(os.path.dirname(__file__), "metric")
 if METRIC_DIR not in sys.path:
@@ -138,6 +140,35 @@ def load_model(weights_path: str, device: torch.device):
 
     model.eval()
     return model
+
+
+def load_model_v4(weights_path: str, device: torch.device, iterations=2):
+    """Load Text_IF_Recon_v4 with key remapping and return (model, model_clip)."""
+    model_clip, _ = clip.load("ViT-B/32", device=device)
+    model = create_model_v4(model_clip, iterations=iterations).to(device)
+
+    checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
+    state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+
+    clean_state = {}
+    for k, v in state_dict.items():
+        clean_state[k.replace("module.", "")] = v
+
+    remapped = {}
+    for k, v in clean_state.items():
+        for level in ['2', '3', '4']:
+            old_prefix = f'base.prompt_guidance_{level}.'
+            new_prefix = f'base.prompt_guidance_{level}.global_affine.'
+            if k.startswith(old_prefix) and 'global_affine' not in k:
+                k = k.replace(old_prefix, new_prefix)
+                break
+        remapped[k] = v
+
+    missing, unexpected = model.load_state_dict(remapped, strict=False)
+    print(f"Loaded weights: {len(remapped) - len(unexpected)}/{len(remapped)} keys")
+
+    model.eval()
+    return model, model_clip
 
 
 def resize_to_multiple_of_16(img: Image.Image) -> Image.Image:
@@ -332,7 +363,22 @@ def main(args):
     print(f"Mask dir: {args.mask_dir}")
     print(f"Image pairs to evaluate: {len(image_list)}")
 
-    model = load_model(args.weights_path, device)
+    if args.iterative:
+        print("Using iterative v4 model with online SAM mask generation")
+        model, model_clip = load_model_v4(args.weights_path, device, iterations=args.iterations)
+        _, clip_preprocess = clip.load("ViT-B/32", device=device)
+        sam_filter = IterativeSAMFilter(
+            sam_ckpt=args.sam_ckpt_iter,
+            obj_text=args.obj_text,
+            clip_model=model.base.model_clip,
+            clip_preprocess=clip_preprocess,
+            device=device,
+            clip_threshold=args.clip_threshold
+        )
+    else:
+        model = load_model(args.weights_path, device)
+        sam_filter = None
+
     text = clip.tokenize([args.input_text]).to(device)
 
     use_mask = args.mask_dir != "" and os.path.isdir(args.mask_dir)
@@ -354,6 +400,7 @@ def main(args):
         vis_tensor = None
         mask_tensor = None
         fused = None
+        fused_1 = None
         recon_ir = None
         recon_vis = None
         recon_dec_ir = None
@@ -379,9 +426,14 @@ def main(args):
             else:
                 mask_tensor = None
 
-            with torch.no_grad():
-                fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis = model(
-                    vis_tensor, ir_tensor, text, mask=mask_tensor)
+            if args.iterative:
+                with torch.no_grad():
+                    fused, fused_1, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis = model(
+                        vis_tensor, ir_tensor, text, sam_filter=sam_filter)
+            else:
+                with torch.no_grad():
+                    fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis = model(
+                        vis_tensor, ir_tensor, text, mask=mask_tensor)
 
             fused_name = os.path.splitext(img_name)[0] + ".png"
             save_fused_image(fused, os.path.join(fused_dir, fused_name))
@@ -397,7 +449,10 @@ def main(args):
             print(f"\n[Error] Failed on {img_name}: {e}")
             continue
         finally:
-            del ir_tensor, vis_tensor, mask_tensor, fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, metrics
+            if args.iterative:
+                del ir_tensor, vis_tensor, mask_tensor, fused, fused_1, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, metrics
+            else:
+                del ir_tensor, vis_tensor, mask_tensor, fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, metrics
             clear_device_cache(device)
 
     details_path = os.path.join(args.output_dir, "evaluation_details.csv")
@@ -417,18 +472,19 @@ def main(args):
     print(f"Done. Results saved to: {args.output_dir}")
     print(f"Details: {details_path}")
     print(f"Summary: {summary_path}")
-    print(f"Mask usage: {'Yes' if use_mask else 'No (evaluating without masks)'}")
+    mask_info = f"Iterative SAM (obj='{args.obj_text}')" if args.iterative else ('Yes' if use_mask else 'No (evaluating without masks)')
+    print(f"Mask usage: {mask_info}")
     print("=" * 80)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate Text_IF_Recon v3 (object-level enhancement)")
+    parser = argparse.ArgumentParser(description="Evaluate Text_IF_Recon v3/v4 (object-level enhancement)")
     parser.add_argument("--data_path", type=str, default="data/IVT_test",
                         help="Path containing ir/+vis/ or infrared/+visible/")
     parser.add_argument("--weights_path", type=str,
-                        default="experiments/TextIF_obj_enhance/weights/checkpoint.pth",
+                        default="experiments/TextIF_obj_enhance_20260601-210510/weights/checkpoint.pth",
                         help="Text_IF_Recon v3 model weight path")
-    parser.add_argument("--mask_dir", type=str, default="",
+    parser.add_argument("--mask_dir", type=str, default="data/IVT_test/masks",
                         help="Directory containing pre-computed masks (leave empty to skip mask)")
     parser.add_argument("--output_dir", type=str, default="results/textif_obj_enhance_eval",
                         help="Directory to save outputs")
@@ -438,6 +494,17 @@ if __name__ == "__main__":
     parser.add_argument("--sample", type=int, default=20, help="Number of sampled images (0 means all)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
     parser.add_argument("--device", type=str, default="auto", help="Device: auto/xpu/cuda/cpu")
+    parser.add_argument("--iterative", action="store_true",
+                        help="Use iterative v4 model with online SAM mask generation")
+    parser.add_argument("--iterations", type=int, default=2,
+                        help="Number of fusion iterations for v4 (default: 2)")
+    parser.add_argument("--obj_text", type=str, default="person",
+                        help="Object category for CLIP filtering (v4 iterative mode)")
+    parser.add_argument("--sam_ckpt_iter", type=str,
+                        default="references/segment-anything/checkpoints/sam_vit_b_01ec64.pth",
+                        help="SAM ViT-B checkpoint for iterative mask generation")
+    parser.add_argument("--clip_threshold", type=float, default=0.22,
+                        help="CLIP similarity threshold for mask filtering")
 
     args = parser.parse_args()
     main(args)
