@@ -125,5 +125,152 @@ def extract_attributes(label_path, image_filename):
     }
 
 
-# ------------------------- Text composition -------------------------
-# Defined in Task 4 below.
+# ===================== Text composition =====================
+
+# Per-slot phrase pools. Each attribute has a dict of value -> list of phrases.
+TEXT_POOLS = {
+    'count': {
+        'single':  ['a single', 'one', 'a lone', 'a solitary'],
+        'few':     ['a few', 'several', 'a small group of', 'two or three'],
+        'crowd':   ['a crowd of', 'many', 'a large group of', 'numerous'],
+    },
+    'class': {
+        'people':   ['pedestrian', 'person', 'individual', 'human subject'],
+        'car':      ['car', 'vehicle', 'automobile'],
+        'bicycle':  ['bicycle', 'bike', 'cyclist'],
+    },
+    'distance': {
+        'far': ['far away', 'in the distance', 'at a far range'],
+        'mid': ['at medium distance', 'mid-range', 'at a moderate distance'],
+        'near':['up close', 'nearby', 'at close range'],
+    },
+    'position': {
+        'left_side':  ['on the left side', 'on the left', 'to the left'],
+        'center':     ['in the center', 'in the middle', 'straight ahead'],
+        'right_side': ['on the right side', 'on the right', 'to the right'],
+    },
+    'time_of_day': {
+        'day':     ['during daytime', 'under daylight', 'in daylight'],
+        'night':   ['at night', 'under nighttime lighting', 'in low light'],
+        'unknown': ['in unspecified lighting', 'under mixed lighting'],
+    },
+}
+
+# Static fallback templates (per class) for robustness.
+FALLBACK_TEMPLATES = {
+    0: ['A pedestrian in the scene.',
+        'Infrared-visible fusion emphasizing a person.',
+        'A human subject in the field of view.',
+        'An individual captured by thermal and visible cameras.',
+        'A person in the urban environment.'],
+    1: ['A vehicle in the scene.',
+        'Infrared-visible fusion emphasizing a car.',
+        'An automobile in the field of view.',
+        'A car captured by thermal and visible cameras.',
+        'A vehicle in the urban environment.'],
+    2: ['A bicycle in the scene.',
+        'Infrared-visible fusion emphasizing a bike.',
+        'A cyclist in the field of view.',
+        'A bicycle captured by thermal and visible cameras.',
+        'A bike in the urban environment.'],
+}
+
+
+def compose_sentence(attrs, rng=None):
+    """Compose an English sentence from 6 attributes.
+
+    Args:
+        attrs: dict from extract_attributes()
+        rng: random.Random instance (default: module random)
+
+    Returns:
+        str: the composed sentence.
+    """
+    if rng is None:
+        import random
+        rng = random
+
+    count_phrase = rng.choice(TEXT_POOLS['count'][attrs['count']])
+    class_phrase = rng.choice(TEXT_POOLS['class'][attrs['main_class_name']])
+    distance_phrase = rng.choice(TEXT_POOLS['distance'][attrs['distance']])
+    position_phrase = rng.choice(TEXT_POOLS['position'][attrs['position']])
+
+    # Resolve unknown time by random sampling (spec section 3.4)
+    tod = attrs['time_of_day']
+    if tod == 'unknown':
+        tod = rng.choice(['day', 'night'])
+    time_phrase = rng.choice(TEXT_POOLS['time_of_day'][tod])
+
+    # Co-occurrence phrasing
+    co = attrs['co_occurrence']
+    if co == 'alone':
+        co_phrase = rng.choice(['alone in the scene',
+                                'with no other traffic',
+                                'isolated from other objects'])
+    elif co == 'mixed_traffic':
+        co_phrase = rng.choice(['in mixed traffic',
+                                'among people, cars and bicycles',
+                                'surrounded by various road users'])
+    else:
+        # Parse 'with_X' or 'with_X_and_Y'
+        suffix = co[len('with_'):]
+        others = suffix.split('_and_')
+        # Pluralize each
+        plurals = [CLASS_PLURAL.get(o, o + 's') for o in others]
+        co_phrase = f"alongside {' and '.join(plurals)}"
+
+    return (f"{count_phrase} {class_phrase} {distance_phrase}, "
+            f"{position_phrase}, {time_phrase}, {co_phrase}.")
+
+
+def maybe_fallback(attrs, prob=0.075, rng=None):
+    """With probability `prob`, return a static fallback template.
+
+    Returns:
+        str or None: a fallback sentence, or None if not triggered.
+    """
+    if rng is None:
+        import random
+        rng = random
+    if rng.random() < prob:
+        return rng.choice(FALLBACK_TEMPLATES[attrs['main_class']])
+    return None
+
+
+# ===================== CLI: rebuild attribute cache =====================
+
+def _build_cache(split, data_root):
+    """Scan a split's label folder and write attrs.json next to it."""
+    label_dir = os.path.join(data_root, 'labels', split)
+    ir_dir = os.path.join(data_root, 'infrared', split)
+    out = {}
+    files = sorted(os.listdir(label_dir))
+    for fn in files:
+        if not fn.endswith('.txt'):
+            continue
+        stem = os.path.splitext(fn)[0]
+        ir_fname = None
+        for ext in ('.jpeg', '.jpg', '.png'):
+            if os.path.exists(os.path.join(ir_dir, stem + ext)):
+                ir_fname = stem + ext
+                break
+        if ir_fname is None:
+            continue
+        a = extract_attributes(os.path.join(label_dir, fn), ir_fname)
+        if a is not None:
+            out[stem] = a
+    cache_path = os.path.join(label_dir, 'attrs.json')
+    with open(cache_path, 'w') as f:
+        json.dump(out, f, indent=2)
+    print(f"{split}: {len(out)} labeled images -> {cache_path}")
+    return cache_path
+
+
+if __name__ == '__main__':
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--data_root', default='D:/StudyFiles/MachineLearning/datasets/FLIR-align-3class/FLIR-align-3class')
+    ap.add_argument('--splits', nargs='+', default=['train', 'test'])
+    args = ap.parse_args()
+    for s in args.splits:
+        _build_cache(s, args.data_root)
