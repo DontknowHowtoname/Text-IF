@@ -66,8 +66,14 @@ class TextSpatialAffine(nn.Module):
         # Cross-attention logits: q @ k -> [B, num_heads, N]
         # einsum: b h d, b h d n -> b h n
         attn_logits = torch.einsum('bhd,bhdn->bhn', q, k) * self.scale
+        # Apply softmax over spatial positions so attention is normalized
+        # probabilities per head (sum-to-1 over N). This makes gamma/beta
+        # driven by *relative* text-image alignment, not by raw logit magnitude,
+        # and keeps the visualization attention consistent with what drives
+        # the modulation (spec §5.3).
+        attn_probs = torch.softmax(attn_logits, dim=-1)  # [B, num_heads, N]
         # [B, num_heads, N] -> [B, num_heads, H, W]
-        attn_map = attn_logits.view(B, self.num_heads, H, W)
+        attn_map = attn_probs.view(B, self.num_heads, H, W)
 
         # Spatial gamma/beta from attention map (zero-init => identity at start)
         gamma = self.gamma_conv(attn_map)  # [B, 1, H, W]
@@ -78,7 +84,7 @@ class TextSpatialAffine(nn.Module):
         out = feat * (1 + gamma) + beta * feat_mean
 
         if return_attn:
-            # Normalize for visualization: softmax over space
-            attn_vis = torch.softmax(attn_logits, dim=-1).view(B, self.num_heads, H, W)
-            return out, attn_vis
+            # Same normalized probabilities used for modulation, returned for
+            # visualization without re-computing.
+            return out, attn_map
         return out
