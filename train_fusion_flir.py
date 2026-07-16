@@ -5,9 +5,13 @@ Usage:
 
 Device: prefers Intel XPU, falls back to CUDA, then CPU.
 """
+import os
+# Mitigate CUDA fragmentation: the OOM error reported reserved >> allocated.
+# Must be set before torch is imported. Harmless on XPU/CPU.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'max_split_size_mb:128')
+
 import argparse
 import datetime
-import os
 import random
 import sys
 
@@ -38,9 +42,11 @@ def parse_args():
     p.add_argument('--epochs', type=int, default=120)
     p.add_argument('--batch_size', type=int, default=8)
     p.add_argument('--num_workers', type=int, default=4)
-    p.add_argument('--lr', type=float, default=1e-4)
+    p.add_argument('--lr', type=float, default=2e-5)
     p.add_argument('--weight_decay', type=float, default=1e-4)
-    p.add_argument('--warmup_epochs', type=int, default=5)
+    p.add_argument('--warmup_epochs', type=int, default=10)
+    p.add_argument('--grad_clip', type=float, default=1.0,
+                   help='max grad norm for clipping; 0 to disable')
     p.add_argument('--val_every_epoch', type=int, default=5)
     p.add_argument('--input_h', type=int, default=512)
     p.add_argument('--input_w', type=int, default=640)
@@ -49,6 +55,10 @@ def parse_args():
     p.add_argument('--device', default='auto',
                    help='auto | xpu | cuda | cpu')
     p.add_argument('--use_dp', action='store_true', help='use DataParallel (CUDA only)')
+    p.add_argument('--amp', action='store_true', default=True,
+                   help='use CUDA mixed precision (fp16). Default on for CUDA.')
+    p.add_argument('--no_amp', dest='amp', action='store_false',
+                   help='disable mixed precision')
     return p.parse_args()
 
 
@@ -178,7 +188,8 @@ def main():
         (train_loss, t_ssim, t_max, t_color, t_text, lr) = train_one_epoch(
             model=model, model_clip=model_clip, optimizer=optimizer,
             lr_scheduler=lr_scheduler, data_loader=train_loader,
-            device=device, epoch=epoch,
+            device=device, epoch=epoch, use_amp=(args.amp and device.type == 'cuda'),
+            grad_clip=args.grad_clip,
         )
 
         tb_writer.add_scalar('train/total', train_loss, epoch)

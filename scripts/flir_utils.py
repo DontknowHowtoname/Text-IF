@@ -37,7 +37,8 @@ def _make_task_list(batch_size, device):
 
 
 def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
-                    device, epoch, use_obj_intensity=False, obj_intensity_weight=0.05):
+                    device, epoch, use_obj_intensity=False, obj_intensity_weight=0.05,
+                    use_amp=False, grad_clip=1.0):
     """One training epoch.
 
     Args:
@@ -49,6 +50,8 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
         epoch: int (for tqdm description)
         use_obj_intensity: reserved (currently unused; FLIR has no GT)
         obj_intensity_weight: reserved
+        use_amp: enable mixed precision
+        grad_clip: max grad norm for clip_grad_norm_. Set to 0 or None to disable.
 
     Returns:
         avg_total_loss, avg_ssim, avg_max, avg_color, avg_text, lr
@@ -65,7 +68,10 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
     accu_color = torch.zeros(1).to(device)
     accu_text = torch.zeros(1).to(device)
 
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
+
+    # AMP GradScaler must be created outside autocast. Only used when use_amp.
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     tbar = tqdm(data_loader, file=sys.stdout)
     for step, batch in enumerate(tbar):
@@ -81,11 +87,12 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
 
         task = _make_task_list(ir.size(0), device)
 
-        I_fused = model(vis, ir, text)
-        loss, loss_ssim, loss_max, loss_color, loss_text = \
-            loss_function(vis_gt, ir_gt, I_fused, task)
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            I_fused = model(vis, ir, text)
+            loss, loss_ssim, loss_max, loss_color, loss_text = \
+                loss_function(vis_gt, ir_gt, I_fused, task)
 
-        loss.backward()
+        scaler.scale(loss).backward()
 
         accu_total += loss.detach()
         accu_ssim += loss_ssim.detach()
@@ -107,13 +114,27 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
         )
 
         if not torch.isfinite(loss):
-            print('WARNING: non-finite loss, ending training ', loss)
-            sys.exit(1)
+            # Skip the step instead of aborting the whole run. Critical for
+            # stability: cross-attention can occasionally produce inf/NaN on
+            # a single batch without meaning the whole epoch is lost.
+            print(f'[warn] non-finite loss at step {step}: {loss.item():.4f}; skipping batch')
+            optimizer.zero_grad(set_to_none=True)
+            continue
 
-        optimizer.step()
+        # Gradient clipping BEFORE scaler.step to prevent explosion.
+        # Must unscale first when using AMP so clip reads true grad values.
+        if use_amp:
+            scaler.unscale_(optimizer)
+        if grad_clip:
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad],
+                max_norm=grad_clip,
+            )
+        scaler.step(optimizer)
+        scaler.update()
         if lr_scheduler is not None:
             lr_scheduler.step()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
     n_steps = max(step + 1, 1)
     return (accu_total.item() / n_steps,
