@@ -1,90 +1,110 @@
-"""Cross-attention based spatial modulation module.
+"""Hybrid text-driven modulation: channel-wise affine + bounded spatial gate.
 
-Replaces FeatureWiseAffine (channel-wise gamma/beta) with spatially-varying
-gamma/beta driven by text-image cross-attention. Text is the query, image
-patches are the keys; attention weights are reshaped to a spatial map and
-converted to per-pixel gamma/beta via 1x1 convs.
+Design rationale (see docs/superpowers/specs/2026-07-03-flir-text-fusion-design.md):
+- Channel-wise gamma/beta matches the original FeatureWiseAffine exactly,
+  preserving its training stability on the Text-IF base architecture.
+- A bounded spatial gate (±gate_scale, tanh-constrained, zero-init) introduces
+  text-driven spatial variation gradually without risking divergence.
+- The cross-attention map is always returned via return_attn=True for
+  visualization (paper heatmaps showing where text attended).
 
-Zero-init on gamma/beta convs ensures the module acts as identity at start,
-so the network starts well-conditioned.
+Forward:
+    feat: [B, C, H, W]
+    text_embed: [B, text_dim]
+    -> [B, C, H, W]
+
+Modulation:
+    out = ((1 + gamma) * feat + beta) * gate
+    where gamma, beta are channel-wise [B, C, 1, 1] (unbounded, like base)
+          gate is spatial [B, 1, H, W] bounded to [1 - s, 1 + s], zero-init = 1
 """
 import torch
 import torch.nn as nn
 
 
 class TextSpatialAffine(nn.Module):
-    """Text-driven spatial affine modulation.
+    """Hybrid modulation: channel affine (main) + bounded spatial gate (auxiliary).
 
     Args:
         text_dim: CLIP text feature dim (default 512).
         feat_channels: channels of the input feature map (C).
-        num_heads: attention heads (default 4). text_dim must be divisible.
+        num_heads: attention heads for cross-attention (default 4).
+        gate_scale: bounds the spatial gate to [1 - s, 1 + s]. Default 0.1
+            means ±10% multiplicative variation around the channel-modulated
+            feature. Small value keeps training stable while still allowing
+            text-driven spatial differentiation.
 
     Input:
         feat: [B, C, H, W] decoder feature map
         text_embed: [B, text_dim] CLIP text features
-        return_attn: if True, also return attention map for visualization
+        return_attn: if True, also return attention map [B, num_heads, H, W]
+                     for visualization
 
     Output:
         [B, C, H, W] modulated feature
     """
 
-    def __init__(self, text_dim=512, feat_channels=64, num_heads=4):
+    def __init__(self, text_dim=512, feat_channels=64, num_heads=4, gate_scale=0.1):
         super().__init__()
         assert text_dim % num_heads == 0, \
             f"text_dim {text_dim} must be divisible by num_heads {num_heads}"
         self.num_heads = num_heads
         self.head_dim = text_dim // num_heads
         self.scale = self.head_dim ** -0.5
+        self.gate_scale = gate_scale
 
-        # Text query projection: [B, text_dim] -> [B, text_dim]
+        # Cross-attention projections (text query x image keys).
+        # Drives the spatial gate and provides visualization.
         self.q_proj = nn.Linear(text_dim, text_dim)
-
-        # Image key projection: [B, C, H, W] -> [B, text_dim, H, W]
         self.k_proj = nn.Conv2d(feat_channels, text_dim, 1)
 
-        # Spatial gamma/beta: [B, num_heads, H, W] -> [B, 1, H, W]
-        self.gamma_conv = nn.Conv2d(num_heads, 1, 1)
-        self.beta_conv = nn.Conv2d(num_heads, 1, 1)
+        # Spatial gate: [B, num_heads, H, W] -> [B, 1, H, W]
+        # Zero-init so gate = 1 + tanh(0) * scale = 1.0 (identity at start).
+        # This means initial behavior is EXACTLY the channel-only modulation,
+        # matching the original FeatureWiseAffine for stable warmup.
+        self.gate_conv = nn.Conv2d(num_heads, 1, 1)
+        nn.init.zeros_(self.gate_conv.weight)
+        nn.init.zeros_(self.gate_conv.bias)
 
-        # Zero-init so initial output = feat * 1 + 0 * mean = feat (identity)
-        nn.init.zeros_(self.gamma_conv.weight)
-        nn.init.zeros_(self.gamma_conv.bias)
-        nn.init.zeros_(self.beta_conv.weight)
-        nn.init.zeros_(self.beta_conv.bias)
+        # Channel-wise gamma/beta MLP (identical to original FeatureWiseAffine).
+        # No bound constraint — relies on the same dynamics that made the
+        # original Text-IF training stable.
+        self.MLP = nn.Sequential(
+            nn.Linear(text_dim, text_dim * 2),
+            nn.LeakyReLU(),
+            nn.Linear(text_dim * 2, feat_channels * 2),
+        )
 
     def forward(self, feat, text_embed, return_attn=False):
         B, C, H, W = feat.shape
         N = H * W
 
-        # Text query: [B, text_dim] -> [B, num_heads, head_dim]
+        # --- Channel-wise modulation (main path, matches FeatureWiseAffine) ---
+        gamma_beta = self.MLP(text_embed)  # [B, C*2]
+        gamma, beta = gamma_beta.chunk(2, dim=-1)  # each [B, C]
+        gamma = gamma.view(B, C, 1, 1)
+        beta = beta.view(B, C, 1, 1)
+        channel_out = (1 + gamma) * feat + beta
+
+        # --- Cross-attention (drives gate + visualization) ---
         q = self.q_proj(text_embed).view(B, self.num_heads, self.head_dim)
-
-        # Image keys: [B, C, H, W] -> [B, text_dim, H, W] -> [B, num_heads, head_dim, N]
         k = self.k_proj(feat).view(B, self.num_heads, self.head_dim, N)
-
-        # Cross-attention logits: q @ k -> [B, num_heads, N]
-        # einsum: b h d, b h d n -> b h n
+        # attn_logits: [B, num_heads, N]
         attn_logits = torch.einsum('bhd,bhdn->bhn', q, k) * self.scale
-        # Apply softmax over spatial positions so attention is normalized
-        # probabilities per head (sum-to-1 over N). This makes gamma/beta
-        # driven by *relative* text-image alignment, not by raw logit magnitude,
-        # and keeps the visualization attention consistent with what drives
-        # the modulation (spec §5.3).
         attn_probs = torch.softmax(attn_logits, dim=-1)  # [B, num_heads, N]
-        # [B, num_heads, N] -> [B, num_heads, H, W]
         attn_map = attn_probs.view(B, self.num_heads, H, W)
 
-        # Spatial gamma/beta from attention map (zero-init => identity at start)
-        gamma = self.gamma_conv(attn_map)  # [B, 1, H, W]
-        beta = self.beta_conv(attn_map)    # [B, 1, H, W]
+        # --- Bounded spatial gate (zero-init => identity at start) ---
+        # tanh bounds the conv output to [-1, 1]; scaling by gate_scale
+        # further restricts multiplicative variation to +/- gate_scale.
+        gate = 1.0 + torch.tanh(self.gate_conv(attn_map)) * self.gate_scale  # [B, 1, H, W]
 
-        # Modulate. feat_mean acts as a per-pixel baseline for beta.
-        feat_mean = feat.mean(dim=1, keepdim=True)  # [B, 1, H, W]
-        out = feat * (1 + gamma) + beta * feat_mean
+        # Final output: channel-modulated feature, gently gated per-pixel.
+        out = channel_out * gate
 
         if return_attn:
-            # Same normalized probabilities used for modulation, returned for
-            # visualization without re-computing.
+            # Return softmax-normalized attention for visualization (paper figures).
+            # This is the same attn_map used to drive the gate, so visualization
+            # matches what actually influences the output spatially.
             return out, attn_map
         return out
