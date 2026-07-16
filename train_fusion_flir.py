@@ -30,7 +30,7 @@ if _THIS_DIR not in sys.path:
 
 from model.text_if_spatial import TextIFSpatial
 from data.flir_dataset import FLIRPromptDataSet
-from scripts.flir_utils import train_one_epoch, evaluate, save_fused_images
+from scripts.flir_utils import train_one_epoch, evaluate, save_fused_images, save_attention_samples
 
 
 def parse_args():
@@ -47,6 +47,8 @@ def parse_args():
     p.add_argument('--warmup_epochs', type=int, default=10)
     p.add_argument('--grad_clip', type=float, default=1.0,
                    help='max grad norm for clipping; 0 to disable')
+    p.add_argument('--save_attn_samples', type=int, default=20,
+                   help='attention map visualization: 0=off, -1=all test, N>0=sample N (default 20)')
     p.add_argument('--val_every_epoch', type=int, default=5)
     p.add_argument('--input_h', type=int, default=512)
     p.add_argument('--input_w', type=int, default=640)
@@ -212,6 +214,20 @@ def main():
             tb_writer.add_scalar('val/color', v_color, epoch)
             tb_writer.add_scalar('val/text', v_text, epoch)
             print(f'[epoch {epoch}] val_loss={val_loss:.4f} val_text={v_text:.4f}')
+
+            # Attention map visualization for the current epoch
+            if args.save_attn_samples != 0:
+                attn_dir = os.path.join(filefold_path, 'attn_vis')
+                model_for_vis = model.module if isinstance(model, nn.DataParallel) else model
+                save_attention_samples(
+                    model=model_for_vis,
+                    data_loader=val_loader,
+                    device=device,
+                    output_dir=attn_dir,
+                    n_samples=args.save_attn_samples,
+                    seed=args.seed,
+                    epoch=epoch,
+                )
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss

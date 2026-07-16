@@ -235,3 +235,107 @@ def save_fused_images(model, data_loader, device, output_dir):
             stem = stems[i]
             arr = (fused[i].transpose(1, 2, 0) * 255).astype(np.uint8)
             Image.fromarray(arr).save(os.path.join(output_dir, f'{stem}.png'))
+
+
+@torch.no_grad()
+def save_attention_samples(model, data_loader, device, output_dir,
+                           n_samples=20, seed=42, epoch=None):
+    """Save attention visualizations for a subset of samples.
+
+    Outputs per sample (in `{output_dir}/epoch_{N}/` or `{output_dir}/`):
+      - `{stem}.png`            composite grid: IR | VIS | Fused + L1-L4 attn
+      - `{stem}_fused.png`      fused image only
+      - `{stem}_attn_L{1-4}.png` per-level mean-over-heads attention heatmap
+
+    Args:
+        model: TextIFSpatial (must implement forward_with_attn)
+        data_loader: dict-batch loader with keys ir/vis/text/stem
+        device: torch device
+        output_dir: base directory
+        n_samples: 0 = no-op; -1 = all; N>0 = randomly sample N (seeded)
+        seed: RNG seed for deterministic sampling
+        epoch: if not None, samples go to {output_dir}/epoch_{epoch}/ else {output_dir}/
+    """
+    if n_samples == 0:
+        return
+
+    import random
+    import numpy as np
+    from PIL import Image
+    try:
+        import matplotlib.pyplot as plt
+        _HAS_MPL = True
+    except ImportError:
+        _HAS_MPL = False
+
+    subdir = output_dir if epoch is None else os.path.join(output_dir, f'epoch_{epoch}')
+    os.makedirs(subdir, exist_ok=True)
+
+    n_total = len(data_loader.dataset)
+    if n_samples == -1 or n_samples >= n_total:
+        keep_indices = set(range(n_total))
+    else:
+        rng = random.Random(seed)
+        keep_indices = set(rng.sample(range(n_total), n_samples))
+
+    model.eval()
+    visited = 0
+    target_count = len(keep_indices)
+    saved = 0
+    for batch in tqdm(data_loader, desc=f'[attn-vis target={target_count}]'):
+        ir = batch['ir'].to(device)
+        vis = batch['vis'].to(device)
+        text = batch['text'].to(device)
+        stems = batch['stem']
+        if isinstance(stems, torch.Tensor):
+            stems = stems.tolist()
+
+        fused, attn_dict = model.forward_with_attn(vis, ir, text)
+        fused = fused.clamp(0, 1).cpu().numpy()
+
+        B = ir.size(0)
+        for i in range(B):
+            idx = visited
+            visited += 1
+            if idx not in keep_indices:
+                continue
+            saved += 1
+
+            stem = stems[i]
+            ir_np = (ir[i].cpu().numpy().transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
+            vis_np = (vis[i].cpu().numpy().transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
+            fused_np = (fused[i].transpose(1, 2, 0) * 255).astype(np.uint8)
+            Image.fromarray(fused_np).save(os.path.join(subdir, f'{stem}_fused.png'))
+
+            # Per-level mean-over-heads attention, min-max normalized
+            attn_grids = []
+            for level in ('L1', 'L2', 'L3', 'L4'):
+                a = attn_dict[level][i].mean(dim=0).cpu().numpy()
+                a = (a - a.min()) / max(a.max() - a.min(), 1e-12)
+                attn_grids.append(a)
+                a_uint = (a * 255).astype(np.uint8)
+                Image.fromarray(a_uint, mode='L').save(
+                    os.path.join(subdir, f'{stem}_attn_{level}.png'))
+
+            # Composite figure (matplotlib preferred; PIL fallback)
+            if _HAS_MPL:
+                fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+                axes[0, 0].imshow(ir_np);  axes[0, 0].set_title('IR');    axes[0, 0].axis('off')
+                axes[0, 1].imshow(vis_np); axes[0, 1].set_title('VIS');   axes[0, 1].axis('off')
+                axes[0, 2].imshow(fused_np); axes[0, 2].set_title('Fused'); axes[0, 2].axis('off')
+                axes[0, 3].axis('off')
+                im = None
+                for j, level in enumerate(('L1', 'L2', 'L3', 'L4')):
+                    im = axes[1, j].imshow(attn_grids[j], cmap='jet', vmin=0, vmax=1)
+                    axes[1, j].set_title(f'Attn {level}'); axes[1, j].axis('off')
+                if im is not None:
+                    fig.colorbar(im, ax=axes[1, :], fraction=0.02, pad=0.02)
+                plt.tight_layout()
+                fig.savefig(os.path.join(subdir, f'{stem}.png'), dpi=80, bbox_inches='tight')
+                plt.close(fig)
+            else:
+                strip = np.concatenate([ir_np, vis_np, fused_np], axis=1)
+                Image.fromarray(strip).save(os.path.join(subdir, f'{stem}.png'))
+
+            if saved >= target_count:
+                return

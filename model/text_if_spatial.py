@@ -5,6 +5,8 @@ swap the 4 prompt_guidance modules. The forward signature
 (feat, text_features) is identical between FeatureWiseAffine and
 TextSpatialAffine, so inheritance just works.
 """
+import torch
+
 from model.Text_IF_model import Text_IF
 from model.text_spatial_affine import TextSpatialAffine
 
@@ -32,14 +34,26 @@ class TextIFSpatial(Text_IF):
         self.prompt_guidance_4 = TextSpatialAffine(
             text_dim=512, feat_channels=dim * 2 ** 3, num_heads=num_heads)
 
-    def get_attention_maps(self, inp_img_A, inp_img_B, text):
-        """Debug helper: returns dict of attention maps at each decoder level.
+    @torch.no_grad()
+    def forward_with_attn(self, inp_img_A, inp_img_B, text):
+        """Forward pass that also returns per-level attention maps.
 
-        Mirrors forward() but extracts attn from each TextSpatialAffine.
-        Useful for visualization (spec section 8.4).
+        Mirrors the base Text_IF.forward chain exactly, but calls each
+        prompt_guidance_X with return_attn=True and collects the attention
+        maps. Intended for visualization only — use the inherited forward()
+        for training to keep that path lean.
+
+        Args:
+            inp_img_A: [B, 3, H, W] visible image (per base convention I_A=vis)
+            inp_img_B: [B, 3, H, W] infrared image
+            text: [B, 77] CLIP tokens
+
+        Returns:
+            out: [B, 3, H, W] fused image (identical to forward())
+            attn: dict {'L1','L2','L3','L4'}, each [B, num_heads, H_l, W_l]
+                  softmax-normalized attention from text query to image keys
         """
-        import torch
-        b, c, h, w = inp_img_A.shape
+        b = inp_img_A.shape[0]
         text_features = self.get_text_feature(text.expand(b, -1)).to(inp_img_A.dtype)
 
         out_enc_level4_A, out_enc_level3_A, out_enc_level2_A, out_enc_level1_A = \
@@ -52,8 +66,35 @@ class TextIFSpatial(Text_IF):
         out_enc_level4 = self.feature_fusion_4(out_enc_level4_A, out_enc_level4_B)
         out_enc_level4 = self.attention_spatial(out_enc_level4)
 
-        _, attn4 = self.prompt_guidance_4(out_enc_level4, text_features, return_attn=True)
-        # NOTE: this debug helper is approximate; for full fidelity use the
-        # return_attn hook in production forward. Kept simple for now.
+        out_enc_level4, attn4 = self.prompt_guidance_4(
+            out_enc_level4, text_features, return_attn=True)
+        inp_dec_level4 = out_enc_level4
+        out_dec_level4 = self.decoder_level4(inp_dec_level4)
 
-        return {'L4': attn4}
+        inp_dec_level3 = self.up4_3(out_dec_level4)
+        inp_dec_level3, attn3 = self.prompt_guidance_3(
+            inp_dec_level3, text_features, return_attn=True)
+        out_enc_level3 = self.feature_fusion_3(out_enc_level3_A, out_enc_level3_B)
+        inp_dec_level3 = torch.cat([inp_dec_level3, out_enc_level3], 1)
+        inp_dec_level3 = self.reduce_chan_level3(inp_dec_level3)
+        out_dec_level3 = self.decoder_level3(inp_dec_level3)
+
+        inp_dec_level2 = self.up3_2(out_dec_level3)
+        inp_dec_level2, attn2 = self.prompt_guidance_2(
+            inp_dec_level2, text_features, return_attn=True)
+        out_enc_level2 = self.feature_fusion_2(out_enc_level2_A, out_enc_level2_B)
+        inp_dec_level2 = torch.cat([inp_dec_level2, out_enc_level2], 1)
+        inp_dec_level2 = self.reduce_chan_level2(inp_dec_level2)
+        out_dec_level2 = self.decoder_level2(inp_dec_level2)
+
+        inp_dec_level1 = self.up2_1(out_dec_level2)
+        inp_dec_level1, attn1 = self.prompt_guidance_1(
+            inp_dec_level1, text_features, return_attn=True)
+        out_enc_level1 = self.feature_fusion_1(out_enc_level1_A, out_enc_level1_B)
+        inp_dec_level1 = torch.cat([inp_dec_level1, out_enc_level1], 1)
+        out_dec_level1 = self.decoder_level1(inp_dec_level1)
+
+        out_dec_level1 = self.refinement(out_dec_level1)
+        out_dec_level1 = self.output(out_dec_level1)
+
+        return out_dec_level1, {'L1': attn1, 'L2': attn2, 'L3': attn3, 'L4': attn4}
