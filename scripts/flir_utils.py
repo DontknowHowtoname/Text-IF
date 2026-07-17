@@ -5,13 +5,22 @@ instead of positional tuples. Uses scripts.losses_xpu for XPU compatibility
 (the original scripts.losses hardcodes .cuda() calls inside L_Grad_position
 and L_SSIM that fail on Intel XPU).
 
-fusion_prompt_loss signature (from scripts/losses_xpu.py):
-    forward(image_A, image_B, image_fused, task)
-    -> (total_loss, ssim_loss, max_loss, color_loss, grad_loss)
-where `task` is an iterable of strings in {"low_light", "over_exposure",
-"ir_low_contrast", "ir_noise"}. FLIR has no degradation type, so we use
-"ir_low_contrast" as the default (balanced max_ratio=8, ssim_ratio=1,
-text_ratio=10).
+Loss strategy: bypass the task-based fusion_prompt_loss wrapper and call the
+inner fusion_loss directly with FLIR-tuned weights. The original task
+"ir_low_contrast" (max=8, ssim=1, text=10, color=12 default) drove training
+to divergence on FLIR because:
+  - L_color with ratio=12 forces fused image's chroma (Cb/Cr in YCbCr) to
+    match VIS, but FLIR IR is grayscale (no chroma info to contribute) so
+    the loss degenerates into "copy VIS color" — fights with intensity and
+    gradient terms that involve IR.
+  - color loss dominated the total (168-264 weighted vs 30-40 for others)
+    and tracked total loss divergence exactly.
+
+FLIR tuned weights (see docs/superpowers/specs/2026-07-03-flir-text-fusion-design.md):
+  - max_ratio=8 (kept from ir_low_contrast; preserves intensity of both sources)
+  - ssim_ratio=1 (kept)
+  - color_ratio=2 (was 12 — KEY FIX: IR has no color, don't force VIS chroma match)
+  - text_ratio=10 (kept)
 """
 import os
 import sys
@@ -19,21 +28,18 @@ import sys
 import torch
 from tqdm import tqdm
 
-from scripts.losses_xpu import fusion_prompt_loss
+from scripts.losses_xpu import fusion_loss
 
 
-# FLIR has no named degradation; use the most general balanced task config.
-DEFAULT_TASK = "ir_low_contrast"
+# FLIR-tuned loss weights. Only color_ratio changed from the default 12 to 2.
+# This isolates the variable for ablation; if stabilization works, color loss
+# was the divergence driver.
+FLIR_LOSS_WEIGHTS = dict(max_ratio=8, ssim_ratio=1, color_ratio=2, text_ratio=10)
 
 
 def _move_loss_to_device(loss_fn, device):
     """Move loss module parameters (sobel kernels, ssim window) to device."""
     return loss_fn.to(device)
-
-
-def _make_task_list(batch_size, device):
-    """Build the per-sample task list expected by fusion_prompt_loss."""
-    return [DEFAULT_TASK] * batch_size
 
 
 def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
@@ -59,7 +65,7 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
     """
     model.train()
     model_clip.eval()
-    loss_function = fusion_prompt_loss()
+    loss_function = fusion_loss()
     loss_function = _move_loss_to_device(loss_function, device)
 
     accu_total = torch.zeros(1).to(device)
@@ -85,12 +91,10 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
         ir_gt = ir
         vis_gt = vis
 
-        task = _make_task_list(ir.size(0), device)
-
         with torch.cuda.amp.autocast(enabled=use_amp):
             I_fused = model(vis, ir, text)
             loss, loss_ssim, loss_max, loss_color, loss_text = \
-                loss_function(vis_gt, ir_gt, I_fused, task)
+                loss_function(vis_gt, ir_gt, I_fused, **FLIR_LOSS_WEIGHTS)
 
         scaler.scale(loss).backward()
 
@@ -158,7 +162,7 @@ def evaluate(model, model_clip, data_loader, device,
     Returns:
         avg_total_loss, avg_ssim, avg_max, avg_color, avg_text
     """
-    loss_function = fusion_prompt_loss()
+    loss_function = fusion_loss()
     loss_function = _move_loss_to_device(loss_function, device)
     model.eval()
 
@@ -176,11 +180,10 @@ def evaluate(model, model_clip, data_loader, device,
 
         ir_gt = ir
         vis_gt = vis
-        task = _make_task_list(ir.size(0), device)
 
         I_fused = model(vis, ir, text)
         loss, loss_ssim, loss_max, loss_color, loss_text = \
-            loss_function(vis_gt, ir_gt, I_fused, task)
+            loss_function(vis_gt, ir_gt, I_fused, **FLIR_LOSS_WEIGHTS)
 
         accu_total += loss
         accu_ssim += loss_ssim.detach()
