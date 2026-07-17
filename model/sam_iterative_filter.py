@@ -39,31 +39,36 @@ def _get_mask_crop(image_np, mask):
 
 def _filter_masks_by_clip(masks, image_np, text_features, clip_model, clip_preprocess,
                           device, threshold=0.22):
-    """Filter SAM masks by CLIP cosine similarity with pre-computed text features."""
+    """Filter SAM masks by CLIP cosine similarity with pre-computed text features.
+
+    Batched version: encodes all candidate crops in a single CLIP forward pass
+    instead of one forward call per mask (much faster on GPU).
+    """
     if len(masks) == 0:
         return []
 
-    filtered = []
+    # Pre-filter by area and build crop list (store mask + crop pairs)
+    candidates = []
     for mask in masks:
         if mask['area'] < 500:
             continue
-
         crop = _get_mask_crop(image_np, mask)
         if crop.shape[0] < 10 or crop.shape[1] < 10:
             continue
+        candidates.append((mask, crop))
 
-        crop_pil = Image.fromarray(crop)
-        crop_input = clip_preprocess(crop_pil).unsqueeze(0).to(device)
+    if len(candidates) == 0:
+        return []
 
-        with torch.no_grad():
-            image_features = clip_model.encode_image(crop_input)
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    # Batch-encode all crops in one CLIP forward call
+    batch = torch.stack([clip_preprocess(Image.fromarray(c)) for _, c in candidates]).to(device)
+    with torch.no_grad():
+        feats = clip_model.encode_image(batch)
+        feats = feats / feats.norm(dim=-1, keepdim=True)
+        sims = (feats @ text_features.T).squeeze(-1)  # [N]
 
-        similarity = (image_features @ text_features.T).squeeze().item()
-        if similarity >= threshold:
-            filtered.append(mask)
-
-    return filtered
+    sim_list = sims.tolist()
+    return [m for (m, _), s in zip(candidates, sim_list) if s >= threshold]
 
 
 def _merge_masks(masks, height, width):
@@ -105,14 +110,24 @@ class IterativeSAMFilter(nn.Module):
         sam.to(device)
         for p in sam.parameters():
             p.requires_grad = False
+
+        # Verify SAM is on the correct device (one-time check)
+        _sam_dev = next(sam.parameters()).device
+        print(f"[SAM device check] SAM parameters are on: {_sam_dev}")
+        if str(_sam_dev) == "cpu":
+            print("  WARNING: SAM is on CPU! This will be 30x+ slower. "
+                  "Check that --device is 'cuda' and torch.cuda.is_available().")
+        else:
+            print(f"  OK: SAM on {_sam_dev} (type={torch.cuda.get_device_name(_sam_dev)})"
+                  if _sam_dev.type == "cuda" else "")
         self.generator = SamAutomaticMaskGenerator(
             sam,
-            points_per_side=32,
+            points_per_side=16,
             pred_iou_thresh=0.86,
             stability_score_thresh=0.92,
-            crop_n_layers=1,
+            crop_n_layers=0,
             crop_n_points_downscale_factor=2,
-            min_mask_region_area=100,
+            min_mask_region_area=500,
         )
 
         # CLIP model (shared, frozen)

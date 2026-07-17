@@ -203,7 +203,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Output directory (default: fused_dir parent + _detection)")
     parser.add_argument("--weights", type=str,
-                        default="references/yolov5-master/models/yolov5m.pt",
+                        default="results/yolov5_finetune_llvip_2/yolov5_runs/llvip_fused/weights/best.pt",
                         help="Path to YOLOv5 weights (.pt file)")
     parser.add_argument("--conf_thres", type=float, default=0.25,
                         help="Confidence threshold for detections")

@@ -10,6 +10,17 @@ Based on train_fusion_obj_enhance.py but uses PromptDataSet (no masks).
 import os
 import argparse
 
+# Must set CUDA_VISIBLE_DEVICES before importing torch,
+# otherwise the CUDA runtime may already be initialized and ignore this env var.
+# Default gpu_id=0; override via --gpu_id before any torch import takes effect.
+_gpu_id = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+# Allow early override from command line: --gpu_id X parsed manually
+for _i, _arg in enumerate(os.sys.argv):
+    if _arg == "--gpu_id" and _i + 1 < len(os.sys.argv):
+        _gpu_id = os.sys.argv[_i + 1]
+        break
+os.environ['CUDA_VISIBLE_DEVICES'] = _gpu_id
+
 import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
@@ -27,8 +38,25 @@ import transforms as T
 
 
 def main(args):
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_id
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    # ---- Device info ----
+    print("=" * 70)
+    print("DEVICE INFORMATION")
+    print("=" * 70)
+    print(f"  PyTorch version : {torch.__version__}")
+    print(f"  CUDA available  : {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"  CUDA version    : {torch.version.cuda}")
+        print(f"  cuDNN version   : {torch.backends.cudnn.version()}")
+        print(f"  GPU count       : {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            print(f"  GPU[{i}]         : {torch.cuda.get_device_name(i)}")
+            mem_total = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+            print(f"  GPU[{i}] memory  : {mem_total:.1f} GB")
+    print(f"  Device          : {device}")
+    print(f"  CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
+    print("=" * 70)
 
     if os.path.exists("./experiments") is False:
         os.makedirs("./experiments")

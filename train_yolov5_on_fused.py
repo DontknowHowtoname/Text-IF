@@ -2,21 +2,29 @@
 Generate fused images from LLVIP train set using Text_IF_Recon v2 model,
 convert VOC annotations to YOLO format, then fine-tune YOLOv5.
 
+Optionally generates fused images for the LLVIP test set (--generate_test)
+for downstream detection evaluation with eval_detection_yolov5.py.
+
 Usage:
     # Full pipeline: fusion generation + YOLOv5 fine-tuning
     python train_yolov5_on_fused.py \
         --fusion_weights experiments/TextIF_full_recon_2_20260506-213402/weights/checkpoint.pth \
         --llvip_root D:/StudyFiles/MachineLearning/datasets/LLVIP
 
+    # Also generate test set fused images for evaluation
+    python train_yolov5_on_fused.py \
+        --fusion_weights experiments/.../checkpoint.pth \
+        --llvip_root D:/StudyFiles/MachineLearning/datasets/LLVIP \
+        --generate_test
+
     # Skip fusion (already generated), only fine-tune
     python train_yolov5_on_fused.py --skip_fusion \
         --output_dir results/yolov5_finetune_llvip
 
-    # Custom settings
+    # Only generate test fused images (skip train fusion & YOLOv5 training)
     python train_yolov5_on_fused.py \
-        --fusion_weights experiments/.../checkpoint.pth \
-        --llvip_root D:/StudyFiles/MachineLearning/datasets/LLVIP \
-        --yolo_epochs 100 --yolo_batch_size 8 --val_split 0.15
+        --skip_training --generate_test \
+        --llvip_root D:/StudyFiles/MachineLearning/datasets/LLVIP
 """
 
 import os
@@ -218,6 +226,82 @@ def generate_fused_images(args):
 
 
 # ---------------------------------------------------------------------------
+# Step 2b: Generate fused images from LLVIP test set
+# ---------------------------------------------------------------------------
+
+def generate_test_fused_images(args, model=None, text=None, device=None):
+    """Run fusion model on LLVIP test images and save results.
+    Reuses an already-loaded model if provided, otherwise loads from disk.
+    """
+    if device is None:
+        device = resolve_device(args.device)
+
+    ir_dir = os.path.join(args.llvip_root, "infrared", "test")
+    vis_dir = os.path.join(args.llvip_root, "visible", "test")
+
+    if not os.path.isdir(ir_dir) or not os.path.isdir(vis_dir):
+        raise FileNotFoundError(
+            f"Cannot find infrared/test or visible/test under {args.llvip_root}"
+        )
+
+    ir_files = {os.path.splitext(f)[0]: f for f in os.listdir(ir_dir)
+                if f.lower().endswith(SUPPORTED_EXTS)}
+    vis_files = {os.path.splitext(f)[0]: f for f in os.listdir(vis_dir)
+                 if f.lower().endswith(SUPPORTED_EXTS)}
+    test_stems = sorted(set(ir_files.keys()) & set(vis_files.keys()))
+
+    if not test_stems:
+        raise RuntimeError("No matching IR/VIS image pairs found in test set")
+
+    print(f"[Fusion/Test] Found {len(test_stems)} image pairs in LLVIP test set")
+
+    fused_test_dir = os.path.join(args.output_dir, "images", "test")
+    os.makedirs(fused_test_dir, exist_ok=True)
+
+    # Load model if not provided
+    if model is None:
+        print(f"[Fusion/Test] Loading model: {args.fusion_weights}")
+        model = load_fusion_model(args.fusion_weights, device)
+        text = clip.tokenize([args.text_prompt]).to(device)
+        clear_device_cache(device)
+
+    n_success = 0
+    n_fail = 0
+    n_skip = 0
+    for stem in tqdm(test_stems, desc="[Fusion/Test] Generating"):
+        out_path = os.path.join(fused_test_dir, stem + ".png")
+
+        if os.path.exists(out_path):
+            n_skip += 1
+            continue
+
+        ir_tensor = None
+        vis_tensor = None
+        try:
+            ir_tensor = to_tensor_rgb(os.path.join(ir_dir, ir_files[stem])).to(device)
+            vis_tensor = to_tensor_rgb(os.path.join(vis_dir, vis_files[stem])).to(device)
+
+            if ir_tensor.shape[-2:] != vis_tensor.shape[-2:]:
+                vis_tensor = F.interpolate(vis_tensor, size=ir_tensor.shape[-2:],
+                                           mode="bilinear", align_corners=True)
+
+            with torch.no_grad():
+                fused, _, _, _, _ = model(vis_tensor, ir_tensor, text)
+
+            save_fused_image(fused, out_path)
+            n_success += 1
+        except Exception as e:
+            print(f"\n[Error] Failed on {stem}: {e}")
+            n_fail += 1
+        finally:
+            del ir_tensor
+            clear_device_cache(device)
+
+    print(f"[Fusion/Test] Done: {n_success} generated, {n_skip} skipped (exist), {n_fail} failed")
+    return test_stems
+
+
+# ---------------------------------------------------------------------------
 # Step 3: VOC XML -> YOLO TXT label conversion
 # ---------------------------------------------------------------------------
 
@@ -355,6 +439,7 @@ train: train  # train images (relative to 'path')
 val: val      # val images (relative to 'path')
 
 # Classes
+nc: 1  # number of classes
 names:
   0: person
 """
@@ -367,9 +452,8 @@ names:
 
 def run_yolov5_training(args, yaml_path):
     """Launch YOLOv5 training via subprocess."""
-    yolo_train = os.path.join(
-        os.path.dirname(__file__), "references", "yolov5-master", "train.py"
-    )
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    yolo_train = os.path.join(script_dir, "references", "yolov5-master", "train.py")
 
     if not os.path.exists(yolo_train):
         raise FileNotFoundError(f"YOLOv5 train.py not found: {yolo_train}")
@@ -384,13 +468,15 @@ def run_yolov5_training(args, yaml_path):
     else:
         yolo_device = "cpu"
 
-    yolo_project = os.path.join(args.output_dir, "yolov5_runs")
+    yolo_project = os.path.abspath(os.path.join(args.output_dir, "yolov5_runs"))
     os.makedirs(yolo_project, exist_ok=True)
 
+    # NOTE: subprocess below runs with cwd=references/yolov5-master/, so ALL paths
+    # passed to YOLOv5 must be absolute (or relative to yolov5-master/).
     cmd = [
         sys.executable, yolo_train,
-        "--data", yaml_path,
-        "--weights", args.yolo_weights,
+        "--data", os.path.abspath(yaml_path),
+        "--weights", os.path.abspath(args.yolo_weights),
         "--epochs", str(args.yolo_epochs),
         "--batch-size", str(args.yolo_batch_size),
         "--imgsz", str(args.yolo_img_size),
@@ -472,6 +558,8 @@ def main():
                         help="Skip fusion generation (use existing fused images)")
     parser.add_argument("--skip_training", action="store_true",
                         help="Skip YOLOv5 training (only generate fusion + labels)")
+    parser.add_argument("--generate_test", action="store_true",
+                        help="Also generate fused images for LLVIP test set (saved to images/test/)")
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -485,14 +573,18 @@ def main():
     print(f"  Fusion weights:   {args.fusion_weights}")
     print(f"  YOLOv5 weights:   {args.yolo_weights}")
     print(f"  Val split:        {args.val_split}")
+    print(f"  Generate test:    {args.generate_test}")
     print("=" * 80)
 
     train_stems = None
     val_stems = None
+    fusion_model = None
+    fusion_text = None
+    fusion_device = None
 
     # Step 1: Generate fused images
     if not args.skip_fusion:
-        print("\n>>> Step 1/4: Generating fused images ...")
+        print("\n>>> Step 1/4: Generating fused train/val images ...")
         train_stems, val_stems = generate_fused_images(args)
     else:
         print("\n>>> Step 1/4: Skipping fusion (using existing images)")
@@ -521,6 +613,11 @@ def main():
                          if f.lower().endswith(SUPPORTED_EXTS)] if os.path.isdir(fused_val_dir) else []
             print(f"  Scanned dirs: Train={len(train_stems)}, Val={len(val_stems)}")
 
+    # Step 1b: Generate test fused images (if requested)
+    if args.generate_test:
+        print("\n>>> Step 1b/4: Generating fused test images ...")
+        generate_test_fused_images(args)
+
     # Step 2: Convert annotations
     print("\n>>> Step 2/4: Converting VOC annotations to YOLO format ...")
     convert_annotations(args, train_stems, val_stems)
@@ -543,6 +640,14 @@ def main():
     print(f"  Fused images:  {os.path.join(args.output_dir, 'images')}")
     print(f"  Labels:        {os.path.join(args.output_dir, 'labels')}")
     print(f"  Dataset YAML:  {yaml_path}")
+    if args.generate_test:
+        test_dir = os.path.join(args.output_dir, "images", "test")
+        print(f"  Test fused:    {test_dir}")
+        print(f"  >> To evaluate detection on test set, run:")
+        print(f"     python eval_detection_yolov5.py \\")
+        print(f"         --fused_dir {test_dir} \\")
+        print(f"         --weights <your_finetuned_model>.pt \\")
+        print(f"         --device cuda")
     if not args.skip_training:
         print(f"  YOLOv5 runs:   {os.path.join(args.output_dir, 'yolov5_runs', args.yolo_exp_name)}")
     print("=" * 80)

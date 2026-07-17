@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(find d:/StudyFiles/MachineLearning/codes/Text-IF/results -maxdepth 3 -name *.csv -o -name *metrics* -o -name *summary*)",
+      "Bash(for d:*)",
+      "Bash(do echo:*)",
+      "Read(//d/StudyFiles/MachineLearning/codes/Text-IF/**)",
+      "Bash(done)",
+      "Bash(for f:*)",
+      "Bash(python aggregate_results.py)",
+      "Bash(python rank_experiments.py)",
+      "Bash(python rank_experiments_fair.py)",
+      "Bash(grep -n \"class MaskGuidedAffine\\\\|class FeatureWiseAffine\" model/*.py)",
+      "Bash(D=\"D:/StudyFiles/MachineLearning/datasets/FLIR-align-3class/FLIR-align-3class\")",
+      "Read(//d/StudyFiles/MachineLearning/codes/Text-IF/$D/**)",
+      "Bash(python tests/test_text_spatial_affine.py)",
+      "Bash(where python:*)",
+      "Bash(python -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(conda env:*)",
+      "Bash(conda info:*)",
+      "Bash(D:/software/anaconda3/envs/cuda1/python.exe -c \"import torch; print\\(''cuda1:'', torch.__version__\\)\")",
+      "Bash(D:/software/anaconda3/envs/cuda2/python.exe -c \"import torch; print\\(''cuda2:'', torch.__version__\\)\")",
+      "Bash(D:/software/anaconda3/envs/CPU/python.exe -c \"import torch; print\\(''CPU:'', torch.__version__\\)\")",
+      "Bash(D:/software/anaconda3/envs/cuda1/python.exe tests/test_text_spatial_affine.py)",
+      "Bash(D:/software/anaconda3/envs/cuda1/python.exe -m pip list)",
+      "Bash(D:/software/anaconda3/envs/xpu/python.exe -m pip list)",
+      "Bash(D:/software/anaconda3/envs/cuda2/python.exe -m pip list)",
+      "Bash(D:/software/anaconda3/envs/xpu/python.exe -c \"import torch; print\\(''torch'', torch.__version__\\); import clip; print\\(''clip ok''\\)\")",
+      "Bash(D:/software/anaconda3/envs/xpu/python.exe -c \":*)",
+      "Bash(D:/software/anaconda3/envs/xpu/python.exe tests/test_attribute_extractor.py)"
+    ]
+  }
+}
