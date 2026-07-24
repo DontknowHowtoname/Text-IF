@@ -31,7 +31,10 @@ def main(args):
         os.makedirs("./experiments")
 
     file_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    filefold_path = "./experiments/TextIF_full_recon_v2_ft_{}".format(file_name)
+    if args.output_dir is not None:
+        filefold_path = args.output_dir
+    else:
+        filefold_path = "./experiments/TextIF_full_recon_v2_ft_{}".format(file_name)
     os.makedirs(filefold_path)
     file_img_path = os.path.join(filefold_path, "img")
     os.makedirs(file_img_path)
@@ -162,7 +165,8 @@ def main(args):
 
     print(f"Fine-tuning Text_IF_Recon v2 from textif-me "
           f"(recon_weight={args.recon_weight}, lr={args.lr}, frozen_encoders=True, "
-          f"max_ratio={args.max_ratio}, ssim_ratio={args.ssim_ratio})")
+          f"max_ratio={args.max_ratio}, ssim_ratio={args.ssim_ratio}, "
+          f"task_defaults=text_ratio{{3,2,3,2}}/max_ratio{{4,3,4,3}})")
 
     for epoch in range(start_epoch, args.epochs):
         # train
@@ -177,7 +181,8 @@ def main(args):
             epoch=epoch,
             recon_weight=args.recon_weight,
             max_ratio=args.max_ratio,
-            ssim_ratio=args.ssim_ratio)
+            ssim_ratio=args.ssim_ratio,
+            text_ratio=args.text_ratio)
 
         tb_writer.add_scalar("train_total_loss", train_loss, epoch)
         tb_writer.add_scalar("train_ssim_loss", train_ssim_loss, epoch)
@@ -194,7 +199,8 @@ def main(args):
                 device=device,
                 epoch=epoch, lr=lr, filefold_path=file_img_path,
                 max_ratio=args.max_ratio,
-                ssim_ratio=args.ssim_ratio)
+                ssim_ratio=args.ssim_ratio,
+                text_ratio=args.text_ratio)
 
             tb_writer.add_scalar("val_total_loss", val_loss, epoch)
             tb_writer.add_scalar("val_ssim_loss", val_ssim_loss, epoch)
@@ -259,12 +265,19 @@ if __name__ == '__main__':
     # Reconstruction loss parameters
     parser.add_argument('--upper_weight', type=float, default=1.3,
                         help='Y_Upper hyper-parameter: contrast amplification (default: 1.3)')
-    parser.add_argument('--recon_weight', type=float, default=0.05,
-                        help='Weight for dual-path reconstruction loss (default: 0.05)')
+    parser.add_argument('--recon_weight', type=float, default=0.3,
+                        help='Weight for dual-path reconstruction loss (default: 0.3; '
+                             'raised from 0.05 because DualReconLoss is the only term '
+                             'that directly preserves source info -> drives MI/VIF/EN)')
     parser.add_argument('--max_ratio', type=float, default=None,
                         help='Override max_ratio for all tasks (default: None = per-task defaults)')
     parser.add_argument('--ssim_ratio', type=float, default=None,
                         help='Override ssim_ratio for all tasks (default: None = per-task defaults)')
+    parser.add_argument('--text_ratio', type=float, default=None,
+                        help='Override text_ratio (L_Grad_position weight) for all tasks '
+                             '(default: None = per-task defaults {3,2,3,2})')
+    parser.add_argument('--output_dir', type=str, default=None,
+                        help='Output directory override. Default: ./experiments/TextIF_full_recon_v2_ft_<timestamp>')
 
     opt = parser.parse_args()
     main(opt)
