@@ -457,13 +457,15 @@ class DualReconLoss(nn.Module):
 
 class fusion_dual_recon_prompt_loss(nn.Module):
     """Full loss: original task-specific fusion loss + dual-path reconstruction loss."""
-    def __init__(self, upper_weight=1.3, recon_weight=1.0, max_ratio=None, ssim_ratio=None):
+    def __init__(self, upper_weight=1.3, recon_weight=1.0,
+                 max_ratio=None, ssim_ratio=None, text_ratio=None):
         super(fusion_dual_recon_prompt_loss, self).__init__()
         self.fusion_loss = fusion_loss()
         self.dual_recon_loss = DualReconLoss(upper_weight=upper_weight)
         self.recon_weight = recon_weight
         self.max_ratio = max_ratio
         self.ssim_ratio = ssim_ratio
+        self.text_ratio = text_ratio
 
     # Per-task default ratios
     _TASK_DEFAULTS = {
@@ -490,8 +492,9 @@ class fusion_dual_recon_prompt_loss(nn.Module):
             defaults = self._TASK_DEFAULTS[task_type]
             mr = self.max_ratio if self.max_ratio is not None else defaults["max_ratio"]
             sr = self.ssim_ratio if self.ssim_ratio is not None else defaults["ssim_ratio"]
+            tr = self.text_ratio if self.text_ratio is not None else defaults["text_ratio"]
             loss, ssim_l, max_l, color_l, text_l = self.fusion_loss(
-                img_A, img_B, img_f, max_ratio=mr, ssim_ratio=sr, text_ratio=defaults["text_ratio"])
+                img_A, img_B, img_f, max_ratio=mr, ssim_ratio=sr, text_ratio=tr)
 
             total_fusion += loss
             total_ssim += ssim_l
