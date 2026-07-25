@@ -72,3 +72,58 @@ Verify the aggregator works on synthetic data:
 ```bash
 python -m pytest tests/test_aggregate_sweep.py -v
 ```
+
+## Alternative: full-pipeline Python runner (`run_sweep.py`)
+
+If you prefer a single Python invocation that runs the whole sweep serially
+(train + eval + aggregate in one call) instead of a SLURM array job, use
+`sweeps/run_sweep.py`. This is useful when:
+- Your sbatch is a single-task job (not an array)
+- You want one combined log per text_ratio
+- You want idempotent re-runs (already-completed T values are skipped)
+
+### Submit (single-task sbatch)
+
+In your sbatch:
+
+```bash
+# activate conda env first (omitted)
+python sweeps/run_sweep.py \
+    --text_ratios 0,1,2,3,5,8,10,15 \
+    --repo_dir /path/to/Text-IF \
+    --pretrained_weights /path/to/textif-me/checkpoint.pth \
+    --dataset_ll /path/to/EMS_lite/Low_light \
+    --dataset_oe /path/to/EMS_lite/Over_exposure \
+    --dataset_ic /path/to/EMS_lite/IR_Low_contrast \
+    --dataset_in /path/to/EMS_lite/IR_Noise \
+    --eval_data_path /path/to/IVT_test
+```
+
+### Outputs
+
+Same directory layout as the SLURM-array approach:
+
+```
+sweeps/out/
+├── text_ratio_T0/
+│   ├── train/              # weights/, img/, log/
+│   ├── metrics/            # evaluation_summary.csv, fused/
+│   ├── train.log           # captured train stdout+stderr
+│   └── eval.log            # captured eval stdout+stderr
+├── text_ratio_T1/...
+└── text_ratio_T15/...
+sweeps/text_ratio_sweep_summary.csv
+```
+
+### Behavior
+
+- **Serial**: one T at a time (one GPU assumed)
+- **Fail-fast**: if any T's training or eval returns non-zero, abort the whole sweep
+- **Idempotent**: if `text_ratio_T<T>/metrics/evaluation_summary.csv` already exists, that T is skipped
+- **Auto-aggregate**: after all T finish, runs `aggregate_sweep.aggregate()` and writes `sweeps/text_ratio_sweep_summary.csv`
+
+### Local unit tests (no GPU needed)
+
+```bash
+python -m pytest tests/test_run_sweep.py tests/test_aggregate_sweep.py -v
+```
