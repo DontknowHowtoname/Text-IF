@@ -150,8 +150,105 @@ def main(argv: Optional[List[str]] = None) -> int:
         dataset_in=args.dataset_in,
         eval_data_path=args.eval_data_path,
     )
-    print(f"[sweep] text_ratios={text_ratios}, output_root={args.output_root!r}")
-    print("[sweep] (sweep loop not implemented yet)")
+
+    repo = Path(args.repo_dir)
+    output_root = Path(args.output_root)
+    train_script = repo / "train_fusion_full_recon_v2_ft.py"
+    eval_script = repo / "evaluate_textif_full_recon_v2.py"
+
+    print(f"[sweep] text_ratios={text_ratios}")
+    print(f"[sweep] output_root={output_root}")
+    print(f"[sweep] starting serial sweep ({len(text_ratios)} values)")
+
+    for T in text_ratios:
+        run_dir = output_root / f"text_ratio_T{T}"
+        train_dir = run_dir / "train"
+        metrics_dir = run_dir / "metrics"
+        train_dir.mkdir(parents=True, exist_ok=True)
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+
+        weights_path = train_dir / "weights" / "checkpoint.pth"
+
+        # Skip if already done (idempotent re-run)
+        summary_csv = metrics_dir / "evaluation_summary.csv"
+        if summary_csv.is_file():
+            print(f"[sweep] T={T} already evaluated at {summary_csv}, skipping")
+            continue
+
+        # --- Train ---
+        train_cmd = [
+            sys.executable, "-u", str(train_script),
+            "--text_ratio", str(T),
+            "--weights", args.pretrained_weights,
+            "--low_light_path", args.dataset_ll,
+            "--over_exposure_path", args.dataset_oe,
+            "--ir_low_contrast_path", args.dataset_ic,
+            "--ir_noise_path", args.dataset_in,
+            "--val_every_epcho", str(args.val_every_epcho),
+            "--output_dir", str(train_dir),
+        ]
+        if args.epochs is not None:
+            train_cmd.extend(["--epochs", str(args.epochs)])
+
+        print(f"\n[sweep] === T={T} | training ===")
+        rc = _run_subprocess_with_log(
+            cmd=train_cmd,
+            log_path=run_dir / "train.log",
+            cwd=str(repo),
+            label=f"T{T}/train",
+        )
+        if rc != 0:
+            print(f"[sweep] T={T} TRAIN FAILED (rc={rc}). "
+                  f"Log: {run_dir / 'train.log'}", file=sys.stderr)
+            print("[sweep] Aborting sweep (fail-fast).", file=sys.stderr)
+            return 1
+
+        if not weights_path.is_file():
+            print(f"[sweep] T={T} train OK but weights file missing: "
+                  f"{weights_path}", file=sys.stderr)
+            return 1
+
+        # --- Evaluate ---
+        eval_cmd = [
+            sys.executable, "-u", str(eval_script),
+            "--weights_path", str(weights_path),
+            "--data_path", args.eval_data_path,
+            "--output_dir", str(metrics_dir),
+        ]
+
+        print(f"\n[sweep] === T={T} | evaluating ===")
+        rc = _run_subprocess_with_log(
+            cmd=eval_cmd,
+            log_path=run_dir / "eval.log",
+            cwd=str(repo),
+            label=f"T{T}/eval",
+        )
+        if rc != 0:
+            print(f"[sweep] T={T} EVAL FAILED (rc={rc}). "
+                  f"Log: {run_dir / 'eval.log'}", file=sys.stderr)
+            print("[sweep] Aborting sweep (fail-fast).", file=sys.stderr)
+            return 1
+
+        print(f"[sweep] T={T} done")
+
+    # --- Aggregate ---
+    # Import shared aggregator (same folder). sys.path already has sweeps/.
+    try:
+        from aggregate_sweep import aggregate
+    except ImportError:
+        # When invoked as `python sweeps/run_sweep.py`, sweeps/ may not be on path
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from aggregate_sweep import aggregate
+
+    summary_csv = repo / "sweeps" / "text_ratio_sweep_summary.csv"
+    print(f"\n[sweep] aggregating -> {summary_csv}")
+    aggregate(
+        out_root=str(output_root),
+        output_csv=str(summary_csv),
+        expected_text_ratios=text_ratios,
+    )
+    print(f"[sweep] summary written: {summary_csv}")
+    print("[sweep] DONE")
     return 0
 
 
