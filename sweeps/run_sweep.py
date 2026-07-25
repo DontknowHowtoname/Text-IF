@@ -102,6 +102,41 @@ def _validate_paths(repo_dir: str, pretrained_weights: str,
         raise SystemExit(2)
 
 
+def _run_subprocess_with_log(cmd: List[str], log_path: Path,
+                             cwd: str, label: str) -> int:
+    """Run cmd as subprocess, tee stdout+stderr to log_path AND to our own
+    stdout. Returns the subprocess return code.
+
+    Uses Python -u equivalent (env PYTHONUNBUFFERED=1) so output flushes
+    promptly — important when running under SLURM where buffered output
+    would hide progress for minutes.
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+
+    print(f"[{label}] cmd: {' '.join(cmd)}")
+    print(f"[{label}] log: {log_path}")
+
+    with open(log_path, "w", encoding="utf-8") as logf:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            bufsize=1,  # line-buffered
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            logf.write(line)
+        proc.wait()
+        return proc.returncode
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point. Returns process exit code."""
     args = parse_args(argv)

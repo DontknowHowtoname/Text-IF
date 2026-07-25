@@ -123,3 +123,54 @@ def test_validate_paths_missing_repo_script_exits(tmp_path, capsys):
     assert exc.value.code == 2
     captured = capsys.readouterr()
     assert "train_fusion_full_recon_v2_ft.py" in captured.err
+
+
+def test_run_subprocess_with_log_captures_output(tmp_path):
+    """Run a stub Python script via _run_subprocess_with_log; verify log file
+    captures stdout+stderr and returncode is propagated."""
+    from run_sweep import _run_subprocess_with_log
+
+    # Stub script that prints to stdout, stderr, and exits 0
+    stub = tmp_path / "stub.py"
+    stub.write_text(
+        'import sys\n'
+        'print("stdout line", flush=True)\n'
+        'print("stderr line", file=sys.stderr, flush=True)\n'
+        'sys.exit(0)\n',
+        encoding="utf-8",
+    )
+    log_file = tmp_path / "stub.log"
+
+    rc = _run_subprocess_with_log(
+        cmd=[sys.executable, str(stub)],
+        log_path=log_file,
+        cwd=str(tmp_path),
+        label="stub",
+    )
+    assert rc == 0
+    assert log_file.is_file()
+    contents = log_file.read_text(encoding="utf-8")
+    assert "stdout line" in contents
+    assert "stderr line" in contents
+
+
+def test_run_subprocess_with_log_propagates_failure(tmp_path):
+    """Stub script that exits 7 — returncode is propagated."""
+    from run_sweep import _run_subprocess_with_log
+
+    stub = tmp_path / "fail.py"
+    stub.write_text(
+        'import sys\n'
+        'print("about to fail", flush=True)\n'
+        'sys.exit(7)\n',
+        encoding="utf-8",
+    )
+    log_file = tmp_path / "fail.log"
+
+    rc = _run_subprocess_with_log(
+        cmd=[sys.executable, str(stub)],
+        log_path=log_file,
+        cwd=str(tmp_path),
+        label="fail",
+    )
+    assert rc == 7
