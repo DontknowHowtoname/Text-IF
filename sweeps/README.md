@@ -12,7 +12,7 @@ for motivation.
 | `sweep_text_ratio.sbatch` | SLURM array job driver (8 parallel tasks) |
 | `run_single.sh` | Per-run wrapper: train + eval for one `text_ratio` |
 | `aggregate_sweep.py` | Pivot per-run `evaluation_summary.csv` -> one wide-format CSV |
-| `out/text_ratio_T<T>/` | Per-run output (train/, metrics/, fused/) |
+| `out/text_ratio_T<T>/` | Per-run output (`train/`, `metrics/` with `fused/` inside) |
 
 ## Setup (HPC)
 

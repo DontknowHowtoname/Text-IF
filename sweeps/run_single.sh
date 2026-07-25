@@ -37,6 +37,9 @@ cd "${REPO_DIR}"
 source "${CONDA_ENV}/bin/activate"
 
 echo "[$(date)] text_ratio=${T} | training -> ${TRAIN_DIR}"
+# --val_every_epcho 1: ensure checkpoints are written starting at epoch 1,
+# so the post-train assertion on weights/checkpoint.pth succeeds even if
+# the run terminates early. Default is 2, which would skip epoch 1 entirely.
 python train_fusion_full_recon_v2_ft.py \
     --text_ratio "${T}" \
     --weights "${PRETRAINED_WEIGHTS}" \
@@ -44,6 +47,7 @@ python train_fusion_full_recon_v2_ft.py \
     --over_exposure_path "${DATASET_OE}" \
     --ir_low_contrast_path "${DATASET_IC}" \
     --ir_noise_path "${DATASET_IN}" \
+    --val_every_epcho 1 \
     --output_dir "${TRAIN_DIR}"
 
 WEIGHTS="${TRAIN_DIR}/weights/checkpoint.pth"
