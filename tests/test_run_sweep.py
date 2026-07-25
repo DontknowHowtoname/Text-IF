@@ -174,3 +174,45 @@ def test_run_subprocess_with_log_propagates_failure(tmp_path):
         label="fail",
     )
     assert rc == 7
+
+
+def test_args_default_output_root():
+    """--output_root defaults to 'sweeps/out' when not specified."""
+    from run_sweep import parse_args
+
+    # Minimal required argv
+    argv = [
+        "--text_ratios", "5",
+        "--repo_dir", "/fake/repo",
+        "--pretrained_weights", "/fake/weights.pth",
+        "--dataset_ll", "/fake/ll",
+        "--dataset_oe", "/fake/oe",
+        "--dataset_ic", "/fake/ic",
+        "--dataset_in", "/fake/in",
+        "--eval_data_path", "/fake/eval",
+    ]
+    args = parse_args(argv)
+    assert args.output_root == "sweeps/out"
+
+
+def test_args_default_val_every_epcho():
+    """--val_every_epcho defaults to 1.
+
+    This pins down the C1 mitigation from the parent spec: default 2 would
+    skip epoch 1 entirely, so checkpoint writing wouldn't start until epoch 2.
+    If a future refactor changes this default, this test will catch it.
+    """
+    from run_sweep import parse_args
+
+    argv = [
+        "--text_ratios", "5",
+        "--repo_dir", "/fake/repo",
+        "--pretrained_weights", "/fake/weights.pth",
+        "--dataset_ll", "/fake/ll",
+        "--dataset_oe", "/fake/oe",
+        "--dataset_ic", "/fake/ic",
+        "--dataset_in", "/fake/in",
+        "--eval_data_path", "/fake/eval",
+    ]
+    args = parse_args(argv)
+    assert args.val_every_epcho == 1
