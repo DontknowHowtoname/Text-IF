@@ -52,12 +52,71 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _parse_text_ratios(s: str) -> List[int]:
+    """Parse '0,1,2,3,5,8,10,15' -> [0, 1, 2, 3, 5, 8, 10, 15].
+
+    Raises ValueError on empty string or non-integer tokens.
+    """
+    tokens = [t.strip() for t in s.split(",") if t.strip()]
+    if not tokens:
+        raise ValueError(f"empty text_ratios list: {s!r}")
+    out = []
+    for t in tokens:
+        try:
+            out.append(int(t))
+        except ValueError:
+            raise ValueError(f"non-integer text_ratio token: {t!r}") from None
+    return out
+
+
+def _validate_paths(repo_dir: str, pretrained_weights: str,
+                    dataset_ll: str, dataset_oe: str,
+                    dataset_ic: str, dataset_in: str,
+                    eval_data_path: str) -> None:
+    """Verify all required paths exist. Prints offending path to stderr and
+    raises SystemExit(2) on any miss."""
+    missing = []
+
+    repo_path = Path(repo_dir)
+    if not repo_path.is_dir():
+        missing.append(f"repo_dir (not a directory): {repo_dir}")
+    else:
+        for script in ("train_fusion_full_recon_v2_ft.py",
+                       "evaluate_textif_full_recon_v2.py"):
+            sp = repo_path / script
+            if not sp.is_file():
+                missing.append(f"repo_dir missing script: {sp}")
+
+    if not Path(pretrained_weights).is_file():
+        missing.append(f"pretrained_weights (not a file): {pretrained_weights}")
+
+    for label, p in [("dataset_ll", dataset_ll), ("dataset_oe", dataset_oe),
+                     ("dataset_ic", dataset_ic), ("dataset_in", dataset_in),
+                     ("eval_data_path", eval_data_path)]:
+        if not Path(p).is_dir():
+            missing.append(f"{label} (not a directory): {p}")
+
+    if missing:
+        for m in missing:
+            print(f"ERROR: {m}", file=sys.stderr)
+        raise SystemExit(2)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point. Returns process exit code."""
     args = parse_args(argv)
-    print(f"[sweep] parsed args: text_ratios={args.text_ratios!r}, "
-          f"repo_dir={args.repo_dir!r}, output_root={args.output_root!r}")
-    print("[sweep] (skeleton — sweep loop not implemented yet)")
+    text_ratios = _parse_text_ratios(args.text_ratios)
+    _validate_paths(
+        repo_dir=args.repo_dir,
+        pretrained_weights=args.pretrained_weights,
+        dataset_ll=args.dataset_ll,
+        dataset_oe=args.dataset_oe,
+        dataset_ic=args.dataset_ic,
+        dataset_in=args.dataset_in,
+        eval_data_path=args.eval_data_path,
+    )
+    print(f"[sweep] text_ratios={text_ratios}, output_root={args.output_root!r}")
+    print("[sweep] (sweep loop not implemented yet)")
     return 0
 
 
