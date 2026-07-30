@@ -117,8 +117,15 @@ class L_Intensity(nn.Module):
         gray_visible = torch.mean(image_visible, dim=1, keepdim=True)
         gray_infrared = torch.mean(image_infrared, dim=1, keepdim=True)
 
-        mask = (gray_infrared > gray_visible).float()
-        fused_image = mask * image_infrared + (1 - mask) * image_visible
+        # Luminance: per-pixel max of VIS and IR gray (preserves intensity
+        # of both sources, same intent as the original mask formulation).
+        # Chroma: always taken from VIS. IR is grayscale-as-RGB (R=G=B),
+        # so it has no native chroma; using VIS chroma everywhere avoids
+        # the gray/color boundary that produced purple fringes at edges
+        # where the old binary mask (gray_infrared > gray_visible) flipped.
+        gray_target = torch.max(gray_visible, gray_infrared)
+        vis_chroma_residual = image_visible - gray_visible
+        fused_image = gray_target + vis_chroma_residual
         return F.l1_loss(fused_image, image_fused)
 
 

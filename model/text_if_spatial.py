@@ -18,30 +18,39 @@ class TextIFSpatial(Text_IF):
         model_clip: CLIP model (frozen)
         dim: base channel dim (default 16, matches Text_IF default)
         num_heads: attention heads in TextSpatialAffine (default 4)
+        gate_scale: bounds the spatial gate in TextSpatialAffine to
+            [1 - s, 1 + s]. Default 0.3 gives the spatial path ~3x more
+            multiplicative influence than the original 0.1, providing a
+            stronger gradient signal for attention to learn meaningful
+            spatial patterns (needed when supervising attention).
     """
 
-    def __init__(self, model_clip, dim=16, num_heads=4):
+    def __init__(self, model_clip, dim=16, num_heads=4, gate_scale=0.3):
         super().__init__(model_clip, dim=dim)
         # Replace the 4 prompt_guidance modules.
         # Channel dims match those in Text_IF.__init__:
         #   L1: dim * 2**0, L2: dim * 2**1, L3: dim * 2**2, L4: dim * 2**3
         self.prompt_guidance_1 = TextSpatialAffine(
-            text_dim=512, feat_channels=dim * 2 ** 0, num_heads=num_heads)
+            text_dim=512, feat_channels=dim * 2 ** 0, num_heads=num_heads,
+            gate_scale=gate_scale)
         self.prompt_guidance_2 = TextSpatialAffine(
-            text_dim=512, feat_channels=dim * 2 ** 1, num_heads=num_heads)
+            text_dim=512, feat_channels=dim * 2 ** 1, num_heads=num_heads,
+            gate_scale=gate_scale)
         self.prompt_guidance_3 = TextSpatialAffine(
-            text_dim=512, feat_channels=dim * 2 ** 2, num_heads=num_heads)
+            text_dim=512, feat_channels=dim * 2 ** 2, num_heads=num_heads,
+            gate_scale=gate_scale)
         self.prompt_guidance_4 = TextSpatialAffine(
-            text_dim=512, feat_channels=dim * 2 ** 3, num_heads=num_heads)
+            text_dim=512, feat_channels=dim * 2 ** 3, num_heads=num_heads,
+            gate_scale=gate_scale)
 
-    @torch.no_grad()
     def forward_with_attn(self, inp_img_A, inp_img_B, text):
         """Forward pass that also returns per-level attention maps.
 
         Mirrors the base Text_IF.forward chain exactly, but calls each
         prompt_guidance_X with return_attn=True and collects the attention
-        maps. Intended for visualization only — use the inherited forward()
-        for training to keep that path lean.
+        maps. Usable both for visualization (callers wrap in @torch.no_grad)
+        and for training (attention maps are differentiable, enabling
+        attention-supervision losses).
 
         Args:
             inp_img_A: [B, 3, H, W] visible image (per base convention I_A=vis)

@@ -49,6 +49,17 @@ def parse_args():
                    help='max grad norm for clipping; 0 to disable')
     p.add_argument('--save_attn_samples', type=int, default=20,
                    help='attention map visualization: 0=off, -1=all test, N>0=sample N (default 20)')
+    p.add_argument('--gate_scale', type=float, default=0.3,
+                   help='bounds TextSpatialAffine spatial gate to [1-s,1+s]. '
+                        'Higher gives the spatial/attention path more influence. '
+                        'Default 0.3 (was 0.1 originally).')
+    p.add_argument('--attn_loss_weight', type=float, default=0.01,
+                   help='weight for thermal-saliency attention supervision MSE. '
+                        'Set to 0 to disable. Default 0.01.')
+    p.add_argument('--saliency_top_k', type=float, default=0.15,
+                   help='fraction of brightest IR pixels kept in saliency IR branch.')
+    p.add_argument('--saliency_sigma', type=float, default=0.3,
+                   help='Gaussian sigma as fraction of per-axis bbox dims in saliency bbox branch.')
     p.add_argument('--val_every_epoch', type=int, default=5)
     p.add_argument('--input_h', type=int, default=512)
     p.add_argument('--input_w', type=int, default=640)
@@ -149,14 +160,17 @@ def main():
     pin_memory = device.type in ('cuda', 'xpu')
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, drop_last=True, pin_memory=pin_memory)
+        num_workers=args.num_workers, drop_last=True, pin_memory=pin_memory,
+        collate_fn=train_ds.collate_fn)
     val_loader = DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, pin_memory=pin_memory)
+        num_workers=args.num_workers, pin_memory=pin_memory,
+        collate_fn=test_ds.collate_fn)
 
     # Model
     model_clip, _ = clip.load('ViT-B/32', device=str(device))
-    model = TextIFSpatial(model_clip, dim=16).to(device)
+    model = TextIFSpatial(model_clip, dim=16, gate_scale=args.gate_scale).to(device)
+    print(f'gate_scale={args.gate_scale}  attn_loss_weight={args.attn_loss_weight}')
     # IMPORTANT: Explicitly freeze CLIP. The base Text_IF only calls .eval(),
     # which does NOT set requires_grad=False. Training without this line
     # would update CLIP weights via the model's internal CLIP submodule.
@@ -187,11 +201,14 @@ def main():
 
     best_val_loss = float('inf')
     for epoch in range(args.epochs):
-        (train_loss, t_ssim, t_max, t_color, t_text, lr) = train_one_epoch(
+        (train_loss, t_ssim, t_max, t_color, t_text, t_attn, lr) = train_one_epoch(
             model=model, model_clip=model_clip, optimizer=optimizer,
             lr_scheduler=lr_scheduler, data_loader=train_loader,
             device=device, epoch=epoch, use_amp=(args.amp and device.type == 'cuda'),
             grad_clip=args.grad_clip,
+            attn_loss_weight=args.attn_loss_weight,
+            saliency_top_k=args.saliency_top_k,
+            saliency_sigma=args.saliency_sigma,
         )
 
         tb_writer.add_scalar('train/total', train_loss, epoch)
@@ -199,6 +216,7 @@ def main():
         tb_writer.add_scalar('train/max', t_max, epoch)
         tb_writer.add_scalar('train/color', t_color, epoch)
         tb_writer.add_scalar('train/text', t_text, epoch)
+        tb_writer.add_scalar('train/attn', t_attn, epoch)
         tb_writer.add_scalar('train/lr', lr, epoch)
 
         do_val = ((epoch + 1) % args.val_every_epoch == 0) or (epoch == args.epochs - 1)

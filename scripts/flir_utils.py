@@ -19,22 +19,30 @@ to divergence on FLIR because:
 FLIR tuned weights (see docs/superpowers/specs/2026-07-03-flir-text-fusion-design.md):
   - max_ratio=8 (kept from ir_low_contrast; preserves intensity of both sources)
   - ssim_ratio=1 (kept)
-  - color_ratio=2 (was 12 — KEY FIX: IR has no color, don't force VIS chroma match)
+  - color_ratio=4 (was 12 — lowered because IR has no chroma; raised from 2
+    after L_Intensity was fixed to keep VIS chroma everywhere, since the
+    gray/color boundary that originally required a low color_ratio is gone)
   - text_ratio=10 (kept)
 """
 import os
 import sys
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from scripts.losses_xpu import fusion_loss
+from scripts.thermal_saliency import build_thermal_saliency, resize_saliency_to_attn
 
 
-# FLIR-tuned loss weights. Only color_ratio changed from the default 12 to 2.
-# This isolates the variable for ablation; if stabilization works, color loss
-# was the divergence driver.
-FLIR_LOSS_WEIGHTS = dict(max_ratio=8, ssim_ratio=1, color_ratio=2, text_ratio=10)
+# FLIR-tuned loss weights.
+# - color_ratio=12 (default) caused divergence: L_color dominated total loss
+#   and fought intensity/gradient terms because IR has no chroma.
+# - color_ratio=2 stabilized training but too weak to constrain edge chroma,
+#   producing purple fringes at object boundaries (see L_Intensity note).
+# - color_ratio=4 is the compromise: enough to constrain edge chroma locally
+#   now that L_Intensity no longer introduces a gray/color boundary.
+FLIR_LOSS_WEIGHTS = dict(max_ratio=8, ssim_ratio=1, color_ratio=4, text_ratio=10)
 
 
 def _move_loss_to_device(loss_fn, device):
@@ -44,24 +52,32 @@ def _move_loss_to_device(loss_fn, device):
 
 def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
                     device, epoch, use_obj_intensity=False, obj_intensity_weight=0.05,
-                    use_amp=False, grad_clip=1.0):
+                    use_amp=False, grad_clip=1.0,
+                    attn_loss_weight=0.01, saliency_top_k=0.15, saliency_sigma=0.3):
     """One training epoch.
 
     Args:
         model: TextIFSpatial instance
         model_clip: CLIP model (frozen, used by fusion_prompt_loss indirectly)
         optimizer, lr_scheduler: standard
-        data_loader: yields dict batches with keys ir/vis/text/stem
+        data_loader: yields dict batches with keys ir/vis/text/stem/bboxes
         device: torch device
         epoch: int (for tqdm description)
         use_obj_intensity: reserved (currently unused; FLIR has no GT)
         obj_intensity_weight: reserved
         use_amp: enable mixed precision
         grad_clip: max grad norm for clip_grad_norm_. Set to 0 or None to disable.
+        attn_loss_weight: weight for attention-supervision MSE loss. Set to 0
+            to disable attention supervision and recover original behavior.
+        saliency_top_k: fraction of brightest IR pixels kept in the IR branch
+            of thermal saliency (only used when attn_loss_weight > 0).
+        saliency_sigma: Gaussian sigma as fraction of per-axis bbox dims in the
+            bbox branch of thermal saliency.
 
     Returns:
-        avg_total_loss, avg_ssim, avg_max, avg_color, avg_text, lr
-        (per-batch averages, matching scripts/utils.py convention)
+        avg_total_loss, avg_ssim, avg_max, avg_color, avg_text, avg_attn, lr
+        (per-batch averages; avg_attn is the unweighted attention MSE for
+        monitoring, even though attn_loss_weight scales its contribution)
     """
     model.train()
     model_clip.eval()
@@ -73,12 +89,14 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
     accu_max = torch.zeros(1).to(device)
     accu_color = torch.zeros(1).to(device)
     accu_text = torch.zeros(1).to(device)
+    accu_attn = torch.zeros(1).to(device)
 
     optimizer.zero_grad(set_to_none=True)
 
     # AMP GradScaler must be created outside autocast. Only used when use_amp.
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
+    supervise_attn = attn_loss_weight > 0
     tbar = tqdm(data_loader, file=sys.stdout)
     for step, batch in enumerate(tbar):
         ir = batch['ir'].to(device)
@@ -92,9 +110,36 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
         vis_gt = vis
 
         with torch.cuda.amp.autocast(enabled=use_amp):
-            I_fused = model(vis, ir, text)
-            loss, loss_ssim, loss_max, loss_color, loss_text = \
+            # Use forward_with_attn to get per-level attention maps for
+            # supervision. Graph is built (forward_with_attn no longer carries
+            # @torch.no_grad) so attn loss backprops into q_proj/k_proj/gate_conv.
+            I_fused, attn_dict = model.forward_with_attn(vis, ir, text)
+            loss_rec, loss_ssim, loss_max, loss_color, loss_text = \
                 loss_function(vis_gt, ir_gt, I_fused, **FLIR_LOSS_WEIGHTS)
+
+            loss_attn = torch.zeros(1, device=device)
+            if supervise_attn:
+                bboxes = [b.to(device) if isinstance(b, torch.Tensor) else b
+                          for b in batch['bboxes']]
+                saliency = build_thermal_saliency(
+                    ir, bboxes,
+                    top_k_pct=saliency_top_k,
+                    sigma_factor=saliency_sigma,
+                )
+                for level, attn in attn_dict.items():
+                    # attn: [B, num_heads, H_l, W_l]
+                    attn_mean = attn.mean(dim=1)  # [B, H_l, W_l]
+                    B_, Hl, Wl = attn_mean.shape
+                    flat = attn_mean.view(B_, -1)
+                    mn = flat.min(dim=-1, keepdim=True).values
+                    mx = flat.max(dim=-1, keepdim=True).values
+                    attn_norm = (flat - mn) / (mx - mn + 1e-8)
+                    attn_norm = attn_norm.view(B_, Hl, Wl)
+                    sal_resized = resize_saliency_to_attn(saliency, Hl, Wl)
+                    loss_attn = loss_attn + F.mse_loss(attn_norm, sal_resized)
+                loss_attn = loss_attn / len(attn_dict)  # avg over L1-L4
+
+            loss = loss_rec + attn_loss_weight * loss_attn
 
         scaler.scale(loss).backward()
 
@@ -103,17 +148,19 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
         accu_max += loss_max.detach()
         accu_color += loss_color.detach()
         accu_text += loss_text.detach()
+        accu_attn += loss_attn.detach()
 
         lr = optimizer.param_groups[0]["lr"]
 
         tbar.desc = ("[train epoch {}] loss: {:.3f}  ssim: {:.3f}  max: {:.3f}  "
-                     "color: {:.3f}  text: {:.3f}  lr: {:.6f}").format(
+                     "color: {:.3f}  text: {:.3f}  attn: {:.4f}  lr: {:.6f}").format(
             epoch,
             accu_total.item() / (step + 1),
             accu_ssim.item() / (step + 1),
             accu_max.item() / (step + 1),
             accu_color.item() / (step + 1),
             accu_text.item() / (step + 1),
+            accu_attn.item() / (step + 1),
             lr,
         )
 
@@ -146,6 +193,7 @@ def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader,
             accu_max.item() / n_steps,
             accu_color.item() / n_steps,
             accu_text.item() / n_steps,
+            accu_attn.item() / n_steps,
             lr)
 
 

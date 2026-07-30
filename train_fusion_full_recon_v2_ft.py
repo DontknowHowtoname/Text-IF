@@ -35,13 +35,13 @@ def main(args):
         filefold_path = args.output_dir
     else:
         filefold_path = "./experiments/TextIF_full_recon_v2_ft_{}".format(file_name)
-    os.makedirs(filefold_path)
+    os.makedirs(filefold_path, exist_ok=True)
     file_img_path = os.path.join(filefold_path, "img")
-    os.makedirs(file_img_path)
+    os.makedirs(file_img_path, exist_ok=True)
     file_weights_path = os.path.join(filefold_path, "weights")
-    os.makedirs(file_weights_path)
+    os.makedirs(file_weights_path, exist_ok=True)
     file_log_path = os.path.join(filefold_path, "log")
-    os.makedirs(file_log_path)
+    os.makedirs(file_log_path, exist_ok=True)
 
     tb_writer = SummaryWriter(log_dir=file_log_path)
 

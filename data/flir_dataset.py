@@ -6,7 +6,7 @@ import sys
 
 from PIL import Image
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, default_collate
 import clip
 
 # Make sibling 'scripts' package importable when run from project root
@@ -74,6 +74,30 @@ class FLIRPromptDataSet(Dataset):
     def __len__(self):
         return len(self.samples)
 
+    def _load_bboxes(self, stem):
+        """Load YOLO bboxes for a sample. Returns [N, 5] tensor.
+
+        Each row: (class, cx_norm, cy_norm, w_norm, h_norm). Empty if no label
+        file or file is empty. Used downstream for thermal-saliency supervision
+        of cross-attention maps.
+        """
+        fn = self.label_files.get(stem)
+        if fn is None:
+            return torch.zeros(0, 5, dtype=torch.float32)
+        path = os.path.join(self.label_dir, fn)
+        boxes = []
+        with open(path) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    try:
+                        c, cx, cy, w, h = (float(x) for x in parts[:5])
+                    except ValueError:
+                        continue
+                    boxes.append([c, cx, cy, w, h])
+        return torch.tensor(boxes, dtype=torch.float32) if boxes \
+            else torch.zeros(0, 5, dtype=torch.float32)
+
     def __getitem__(self, idx):
         stem = self.samples[idx]
         ir_path = os.path.join(self.ir_dir, self.ir_files[stem])
@@ -96,6 +120,9 @@ class FLIRPromptDataSet(Dataset):
         # CLIP tokenize returns [N] tensor for a single string
         tokens = clip.tokenize([text])[0]  # [77]
 
+        # BBox info for thermal-saliency supervision (attention target).
+        bboxes = self._load_bboxes(stem)
+
         return {
             'ir': ir,
             'vis': vis,
@@ -103,4 +130,21 @@ class FLIRPromptDataSet(Dataset):
             'text_str': text,
             'attrs': attrs,
             'stem': stem,
+            'bboxes': bboxes,
         }
+
+    def collate_fn(self, batch):
+        """Custom collate that keeps variable-length 'bboxes' and string fields
+        as lists while stacking fixed-shape tensors.
+
+        Default collate tries to stack bboxes (per-sample N varies) which
+        fails. This delegates fixed-shape keys to default_collate and treats
+        'bboxes', 'text_str', 'attrs', 'stem' as lists.
+        """
+        list_keys = {'bboxes', 'text_str', 'attrs', 'stem'}
+        fixed = [{k: v for k, v in s.items() if k not in list_keys}
+                 for s in batch]
+        out = default_collate(fixed)
+        for k in list_keys:
+            out[k] = [s[k] for s in batch]
+        return out
