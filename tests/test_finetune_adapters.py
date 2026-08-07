@@ -55,3 +55,21 @@ def test_generic_uses_default_ratios_when_no_override():
 
     out = loss_fn(I_A_gt, I_B_gt, fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, ["generic"])
     assert torch.isfinite(out[0]), f"Loss must be finite, got {out[0]}"
+
+
+def test_module_imports_without_ems_lite(tmp_path, monkeypatch):
+    """scripts.utils must be importable even when ./dataset/EMS_lite does not
+    exist. Module-level text.txt loaders must not crash on import."""
+    import importlib
+
+    # Run from a cwd where EMS_lite is not present.
+    monkeypatch.chdir(tmp_path)
+    # Force re-import under the new cwd.
+    sys.modules.pop("scripts.utils", None)
+    try:
+        import scripts.utils  # noqa: F401
+        # If we got here without exception, the hardening worked.
+        assert True
+    finally:
+        # Restore module so other tests get the cached, repo-cwd version.
+        sys.modules.pop("scripts.utils", None)

@@ -12,25 +12,23 @@ import cv2
 
 from scripts.losses import fusion_prompt_loss, fusion_recon_prompt_loss, fusion_dual_recon_prompt_loss, fusion_dual_recon_mask_loss
 
-low_light_prompt_path = "./dataset/EMS_lite/Low_light/train/text.txt"
-assert os.path.exists(low_light_prompt_path), "text prompt root: {} does not exist.".format(low_light_prompt_path)
-with open(low_light_prompt_path, 'r', encoding='utf-8') as file:
-        low_light_lines = file.readlines()
+def _try_load_lines(path):
+    """Load text.txt lines if available; return [] silently if missing.
 
-over_exposure_prompt_path = "./dataset/EMS_lite/Over_exposure/train/text.txt"
-assert os.path.exists(over_exposure_prompt_path), "text prompt root: {} does not exist.".format(over_exposure_prompt_path)
-with open(over_exposure_prompt_path, 'r', encoding='utf-8') as file:
-        over_exposure_lines = file.readlines()
+    Hardens module-level loading so scripts.utils is importable from any cwd
+    (e.g. when fine-tuning on a workspace that lacks ./dataset/EMS_lite/).
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.readlines()
+    except (FileNotFoundError, OSError):
+        return []
 
-ir_low_contrast_prompt_path = "./dataset/EMS_lite/IR_Low_contrast/train/text.txt"
-assert os.path.exists(ir_low_contrast_prompt_path), "text prompt root: {} does not exist.".format(ir_low_contrast_prompt_path)
-with open(ir_low_contrast_prompt_path, 'r', encoding='utf-8') as file:
-        ir_low_contrast_lines = file.readlines()
 
-ir_noise_prompt_path = "./dataset/EMS_lite/IR_Noise/train/text.txt"
-assert os.path.exists(ir_noise_prompt_path), "text prompt root: {} does not exist.".format(ir_noise_prompt_path)
-with open(ir_noise_prompt_path, 'r', encoding='utf-8') as file:
-        ir_noise_lines = file.readlines()
+low_light_lines       = _try_load_lines("./dataset/EMS_lite/Low_light/train/text.txt")
+over_exposure_lines   = _try_load_lines("./dataset/EMS_lite/Over_exposure/train/text.txt")
+ir_low_contrast_lines = _try_load_lines("./dataset/EMS_lite/IR_Low_contrast/train/text.txt")
+ir_noise_lines        = _try_load_lines("./dataset/EMS_lite/IR_Noise/train/text.txt")
 
 def read_data(root: str):
     assert os.path.exists(root), "dataset root: {} does not exist.".format(root)
