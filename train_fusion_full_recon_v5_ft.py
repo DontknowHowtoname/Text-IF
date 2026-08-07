@@ -131,7 +131,7 @@ def main(args):
     # Load pretrained weights (remap keys: add 'base.' prefix for Text_IF weights without it)
     if args.weights != "":
         assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
-        weights_dict = torch.load(args.weights, map_location=device)["model"]
+        weights_dict = torch.load(args.weights, map_location=device, weights_only=False)["model"]
         # Check if keys already have 'base.' prefix (from a previous Text_IF_Recon checkpoint)
         has_base_prefix = any(k.startswith('base.') for k in weights_dict)
         if not has_base_prefix:
@@ -159,7 +159,7 @@ def main(args):
     lr_scheduler = create_lr_scheduler(optimizer, len(train_loader), args.epochs, warmup=True)
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu')
+        checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         model.load_state_dict(checkpoint['model'])
         lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
         start_epoch = checkpoint['epoch'] + 1
