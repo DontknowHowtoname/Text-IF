@@ -73,6 +73,85 @@ class FFBlock(nn.Module):
         return fus
 
 
+class SpatialAttention(nn.Module):
+    """CBAM-style spatial attention producing a single-channel mask in [0, 1].
+
+    Channel-wise max and avg pools of the input are concatenated (2 channels)
+    and fed through a 7x7 conv. Parameter count is independent of input
+    channels: 2 * 1 * 7 * 7 = 98 + 0 (bias=False).
+    """
+    def __init__(self, kernel_size: int = 7):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size,
+                              padding=kernel_size // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = torch.mean(x, dim=1, keepdim=True)             # [B, 1, H, W]
+        mx, _ = torch.max(x, dim=1, keepdim=True)            # [B, 1, H, W]
+        return self.sigmoid(self.conv(torch.cat([avg, mx], dim=1)))  # [B, 1, H, W]
+
+
+class FFBlockSCA(nn.Module):
+    """Feature Fusion Block with Spatial-Channel Joint Attention.
+
+    Identical structure to FFBlock when use_spatial=False. When
+    use_spatial=True, adds a shared CBAM-style spatial attention branch
+    that modulates both modalities jointly via a single [B, 1, H, W] mask.
+    Per-modality channel attention (channel_weights_1/2) is preserved, so
+    modality specificity is encoded by the channel branch while the spatial
+    branch captures scene-level foreground/background structure.
+
+    Args:
+        in_channels: input channel count per modality (C).
+        out_channels: output channel count.
+        use_spatial: when True, enable the spatial attention branch. When
+            False, this module is numerically and structurally identical
+            to FFBlock (clean ablation control).
+    """
+    def __init__(self, in_channels, out_channels, use_spatial: bool = True):
+        super(FFBlockSCA, self).__init__()
+        self.use_spatial = use_spatial
+
+        # Identical to FFBlock
+        self.conv_1_1 = nn.Sequential(
+            BasicConv(in_channels * 2, in_channels * 2, kernel_size=3, relu=True),
+            BasicConv(in_channels * 2, out_channels, kernel_size=3, relu=True),
+            BasicConv(out_channels, out_channels, kernel_size=3, relu=True),
+        )
+        self.conv_1_2 = nn.Sequential(
+            BasicConv(in_channels * 2, in_channels * 2, kernel_size=3, relu=True),
+            BasicConv(in_channels * 2, out_channels, kernel_size=3, relu=True),
+            BasicConv(out_channels, out_channels, kernel_size=3, relu=True),
+        )
+        self.channel_weights_1 = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.channel_weights_2 = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.conv_2 = BasicConv(in_channels * 2, out_channels, kernel_size=3, relu=True)
+
+        # New: shared spatial attention branch
+        if use_spatial:
+            self.spatial_attn = SpatialAttention(kernel_size=7)
+
+    def forward(self, en1, en2):
+        cat_1_1 = torch.cat([en1, en2], dim=1)
+        sconv_1 = self.conv_1_1(cat_1_1)
+        sconv_2 = self.conv_1_2(cat_1_1)
+
+        w_c1 = self.channel_weights_1(sconv_1)
+        w_c2 = self.channel_weights_2(sconv_2)
+
+        if self.use_spatial:
+            ctx = torch.cat([sconv_1, sconv_2], dim=1)       # [B, 2C, H, W]
+            w_s = self.spatial_attn(ctx)                     # [B, 1, H, W]
+            x_1 = en1 * w_c1 * w_s
+            x_2 = en2 * w_c2 * w_s
+        else:
+            x_1 = en1 * w_c1
+            x_2 = en2 * w_c2
+
+        return self.conv_2(torch.cat([x_1, x_2], dim=1))
+
+
 class FDBlock(nn.Module):
     """Feature Decoupled Block.
     SE-attends modality features and subtracts from fused features,
