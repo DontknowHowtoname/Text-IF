@@ -115,25 +115,35 @@ def read_data(root: str):
     val_low_light_path_list = [val_visible_path, val_infrared_path]
     return train_low_light_path_list, val_low_light_path_list
 
+# Fixed generic prompt for fine-tuning on standard IVIF benchmarks that lack
+# per-task text.txt files. Matches the v2-ft val-time sentence prefix so the
+# token distribution stays close to pretraining.
+GENERIC_PROMPT = "This is the infrared-visible light fusion task."
+
+
+def get_generic_prompt():
+    """Return the fixed generic prompt used by SingleTaskDataSet fine-tuning."""
+    return GENERIC_PROMPT
+
+
+def _choose_prompt(lines):
+    """Pick a random stripped line; fall back to generic prompt if empty."""
+    if not lines:
+        return GENERIC_PROMPT
+    return random.choice(lines).strip()
+
+
 def get_low_light_prompt():
-    random_line = random.choice(low_light_lines)
-    random_line = random_line.strip()
-    return random_line
+    return _choose_prompt(low_light_lines)
 
 def get_over_exposure_prompt():
-    random_line = random.choice(over_exposure_lines)
-    random_line = random_line.strip()
-    return random_line
+    return _choose_prompt(over_exposure_lines)
 
 def get_ir_low_contrast_prompt():
-    random_line = random.choice(ir_low_contrast_lines)
-    random_line = random_line.strip()
-    return random_line
+    return _choose_prompt(ir_low_contrast_lines)
 
 def get_ir_noise_prompt():
-    random_line = random.choice(ir_noise_lines)
-    random_line = random_line.strip()
-    return random_line
+    return _choose_prompt(ir_noise_lines)
 
 def train_one_epoch(model, model_clip, optimizer, lr_scheduler, data_loader, device, epoch):
     model.train()

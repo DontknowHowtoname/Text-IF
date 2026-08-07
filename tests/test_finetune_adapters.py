@@ -60,8 +60,6 @@ def test_generic_uses_default_ratios_when_no_override():
 def test_module_imports_without_ems_lite(tmp_path, monkeypatch):
     """scripts.utils must be importable even when ./dataset/EMS_lite does not
     exist. Module-level text.txt loaders must not crash on import."""
-    import importlib
-
     # Run from a cwd where EMS_lite is not present.
     monkeypatch.chdir(tmp_path)
     # Force re-import under the new cwd.
@@ -69,7 +67,36 @@ def test_module_imports_without_ems_lite(tmp_path, monkeypatch):
     try:
         import scripts.utils  # noqa: F401
         # If we got here without exception, the hardening worked.
-        assert True
+        assert hasattr(scripts.utils, "low_light_lines"), \
+            "module must expose low_light_lines after import"
     finally:
         # Restore module so other tests get the cached, repo-cwd version.
         sys.modules.pop("scripts.utils", None)
+
+
+def test_get_generic_prompt_returns_constant_string():
+    """get_generic_prompt() must return the fixed generic prompt string."""
+    from scripts.utils import get_generic_prompt
+    p = get_generic_prompt()
+    assert isinstance(p, str)
+    assert p == "This is the infrared-visible light fusion task."
+
+
+def test_task_prompt_falls_back_to_generic_when_lines_empty(monkeypatch):
+    """If low_light_lines is empty (EMS_lite missing), get_low_light_prompt()
+    must fall back to the generic prompt instead of raising IndexError."""
+    import scripts.utils as su
+    monkeypatch.setattr(su, "low_light_lines", [])
+    p = su.get_low_light_prompt()
+    assert p == su.get_generic_prompt()
+
+
+def test_task_prompt_returns_random_line_when_lines_present(monkeypatch):
+    """When low_light_lines is populated, get_low_light_prompt returns a
+    stripped random choice from that list."""
+    import scripts.utils as su
+    monkeypatch.setattr(su, "low_light_lines", ["  hello world  \n", "  another  \n"])
+    # Force random.choice to deterministically return the first entry.
+    monkeypatch.setattr(su.random, "choice", lambda seq: seq[0])
+    p = su.get_low_light_prompt()
+    assert p == "hello world"
