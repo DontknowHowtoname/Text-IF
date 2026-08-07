@@ -134,3 +134,13 @@ D:/software/anaconda3/envs/xpu/python.exe sweeps/tradeoff_plots.py
 # Phase 2 generalization (T5/T8/T10 × 5 datasets × 20 imgs)
 D:/software/anaconda3/envs/xpu/python.exe sweeps/run_generalization.py --sample 20 --seed 42 --device xpu
 ```
+
+## v5 smoke (2026-08-07)
+
+Verified FFBlockSCA training pipeline boot. Both runs crash at checkpoint load.
+
+- `--use_spatial 1`: data loading succeeds (4× "Loading IVF Fusion ..." banners printed, datasets enumerated). Crashes at `torch.load` (line 134) with `_pickle.UnpicklingError: Weights only load failed`. The pretrained checkpoint contains `argparse.Namespace` (key `args`), which is blocked by PyTorch 2.6+ default `weights_only=True`. Blocked before any training iteration.
+- `--use_spatial 0`: identical failure — same `torch.load` error at line 134. Blocked before any training iteration.
+- Both runs used batch_size=4, epochs=1; full A/B/C runs blocked until fix.
+
+**Fix required:** `train_fusion_full_recon_v5_ft.py` line 134 needs `weights_only=False` (or the pretrained checkpoint must be re-saved without the `args` key). Line 162 (`--resume` path) likely needs the same fix.
