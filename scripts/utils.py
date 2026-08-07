@@ -924,7 +924,11 @@ def evaluate_replay(model, data_loader, device, epoch, lr, filefold_path,
     Mirrors evaluate_recon_dual structure but:
       - Uses generic prompt for every sample.
       - Skips per-task text dispatch.
-      - Skips image saving when filefold_path is None.
+      - Does NOT save sample images (unlike evaluate_recon_dual). The
+        filefold_path parameter is accepted for signature compatibility
+        with the training loop's call site but is currently unused.
+        Fine-tune validation focuses on loss tracking for best-checkpoint
+        selection; image dumps are not needed.
 
     Returns: 6-tuple (total, ssim, max, color, text, recon) averaged over steps.
     """
