@@ -480,6 +480,9 @@ class fusion_dual_recon_prompt_loss(nn.Module):
         "over_exposure":    {"max_ratio": 3, "ssim_ratio": 1,  "text_ratio": 2},
         "ir_low_contrast":  {"max_ratio": 4, "ssim_ratio": 1,  "text_ratio": 3},
         "ir_noise":         {"max_ratio": 3, "ssim_ratio": 1,  "text_ratio": 2},
+        # NEW: mid-range default for fine-tuning on standard IF benchmarks
+        # where no degradation type is specified. Used by train_finetune_v2ft.py.
+        "generic":          {"max_ratio": 4, "ssim_ratio": 1,  "text_ratio": 3},
     }
 
     def forward(self, I_A_gt, I_B_gt, fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, task):
