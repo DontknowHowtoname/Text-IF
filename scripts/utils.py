@@ -796,6 +796,126 @@ def train_one_epoch_recon_dual(model, model_clip, optimizer, lr_scheduler, data_
             accu_text_loss.item() / (step + 1), accu_recon_loss.item() / (step + 1), lr)
 
 
+def train_one_epoch_replay(model, model_clip, optimizer, lr_scheduler,
+                            target_loader, ems_loader, replay_ratio,
+                            device, epoch,
+                            recon_weight=1.0, max_ratio=None, ssim_ratio=None, text_ratio=None):
+    """Fine-tune training loop with optional EMS_lite replay.
+
+    The target_loader is the primary epoch loop (defines epoch length).
+    ems_loader is cycled via itertools.cycle; on each step, with probability
+    replay_ratio, we also pull an EMS batch and do a separate
+    forward+backward+step.
+
+    Target batches use generic prompt (task="generic"); EMS batches use the
+    original task-specific prompts (low_light/over_exposure/...).
+
+    Returns: 7-tuple (total, ssim, max, color, text, recon, lr) averaged over
+    all forward passes (target + EMS).
+    """
+    import itertools
+    import clip as _clip
+
+    model.train()
+    if model_clip is not None:
+        model_clip.eval()
+
+    loss_function = fusion_dual_recon_prompt_loss(
+        recon_weight=recon_weight, max_ratio=max_ratio,
+        ssim_ratio=ssim_ratio, text_ratio=text_ratio
+    )
+    if torch.cuda.is_available():
+        loss_function = loss_function.to(device)
+
+    accu_total = torch.zeros(1).to(device)
+    accu_ssim = torch.zeros(1).to(device)
+    accu_max = torch.zeros(1).to(device)
+    accu_color = torch.zeros(1).to(device)
+    accu_text = torch.zeros(1).to(device)
+    accu_recon = torch.zeros(1).to(device)
+    n_passes = 0
+
+    ems_iter = None
+    if ems_loader is not None and replay_ratio > 0.0:
+        ems_iter = itertools.cycle(ems_loader)
+
+    optimizer.zero_grad()
+
+    target_iter = tqdm(target_loader, file=sys.stdout) if hasattr(target_loader, "__iter__") else target_loader
+    for step, data in enumerate(target_iter):
+        # ---- Target batch forward (generic prompt) ----
+        I_A, I_B, I_A_gt, I_B_gt, _, task, _ = data
+        text_line = [get_generic_prompt()] * len(task)
+        text = _clip.tokenize(text_line).to(device)
+        if torch.cuda.is_available():
+            I_A = I_A.to(device); I_B = I_B.to(device)
+            I_A_gt = I_A_gt.to(device); I_B_gt = I_B_gt.to(device)
+
+        I_fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis = model(I_A, I_B, text)
+        loss, l_ssim, l_max, l_color, l_text, l_recon = loss_function(
+            I_A_gt, I_B_gt, I_fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, list(task))
+        loss.backward()
+        accu_total += loss.detach(); accu_ssim += l_ssim.detach()
+        accu_max += l_max.detach(); accu_color += l_color.detach()
+        accu_text += l_text.detach(); accu_recon += l_recon.detach()
+        n_passes += 1
+
+        if not torch.isfinite(loss):
+            print("WARNING: non-finite target loss, ending training", loss)
+            sys.exit(1)
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+
+        # ---- Optional EMS replay step ----
+        if ems_iter is not None and random.random() < replay_ratio:
+            ems_data = next(ems_iter)
+            eA, eB, eA_gt, eB_gt, _, etask, _ = ems_data
+            e_text_line = []
+            for t in etask:
+                if t == "low_light":          e_text_line.append(get_low_light_prompt())
+                elif t == "over_exposure":    e_text_line.append(get_over_exposure_prompt())
+                elif t == "ir_low_contrast":  e_text_line.append(get_ir_low_contrast_prompt())
+                elif t == "ir_noise":         e_text_line.append(get_ir_noise_prompt())
+                else:                          e_text_line.append(get_generic_prompt())
+            e_text = _clip.tokenize(e_text_line).to(device)
+            if torch.cuda.is_available():
+                eA = eA.to(device); eB = eB.to(device)
+                eA_gt = eA_gt.to(device); eB_gt = eB_gt.to(device)
+
+            e_fused, e_ri, e_rv, e_di, e_dv = model(eA, eB, e_text)
+            e_loss, e_ssim, e_max, e_color, e_text_l, e_recon = loss_function(
+                eA_gt, eB_gt, e_fused, e_ri, e_rv, e_di, e_dv, list(etask))
+            e_loss.backward()
+            accu_total += e_loss.detach(); accu_ssim += e_ssim.detach()
+            accu_max += e_max.detach(); accu_color += e_color.detach()
+            accu_text += e_text_l.detach(); accu_recon += e_recon.detach()
+            n_passes += 1
+
+            if not torch.isfinite(e_loss):
+                print("WARNING: non-finite EMS replay loss, ending training", e_loss)
+                sys.exit(1)
+            optimizer.step()
+            # NOTE: do not step lr_scheduler here — keep lr schedule aligned with
+            # primary target epoch length (one scheduler step per target step).
+            optimizer.zero_grad()
+
+        lr = optimizer.param_groups[0]["lr"]
+        if hasattr(target_iter, "desc"):
+            target_iter.desc = (
+                "[ft epoch {}] loss: {:.3f}  ssim: {:.3f}  max: {:.3f}  "
+                "color: {:.3f}  text: {:.3f}  recon: {:.3f}  lr: {:.6f}  passes: {}"
+            ).format(epoch, accu_total.item() / n_passes, accu_ssim.item() / n_passes,
+                     accu_max.item() / n_passes, accu_color.item() / n_passes,
+                     accu_text.item() / n_passes, accu_recon.item() / n_passes, lr, n_passes)
+
+    if n_passes == 0:
+        n_passes = 1
+    return (accu_total.item() / n_passes, accu_ssim.item() / n_passes,
+            accu_max.item() / n_passes, accu_color.item() / n_passes,
+            accu_text.item() / n_passes, accu_recon.item() / n_passes, lr)
+
+
 @torch.no_grad()
 def evaluate_recon_dual(model, data_loader, device, epoch, lr, filefold_path,
                         max_ratio=None, ssim_ratio=None, text_ratio=None):
