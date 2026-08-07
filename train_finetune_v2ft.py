@@ -259,6 +259,5 @@ if __name__ == "__main__":
     parser.add_argument("--gpu_id", default="0")
     parser.add_argument("--output_dir", default=None,
                         help="Override default ./experiments/finetune_<v>_<dataset>_<timestamp>")
-    parser.add_argument("--resume", default="")
     args = parser.parse_args()
     main(args)
