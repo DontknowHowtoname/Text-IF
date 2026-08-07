@@ -128,3 +128,24 @@ def test_train_one_epoch_replay_with_ems_runs():
     assert len(out) == 7
     for v in out:
         assert torch.isfinite(torch.tensor(float(v))), f"Non-finite: {v}"
+
+
+def test_evaluate_replay_runs_on_target_only():
+    """evaluate_replay must run on a target val loader, using generic prompt,
+    and return a 6-tuple of finite scalars."""
+    from scripts.utils import evaluate_replay
+
+    model = _TinyModel()
+    val_loader = _make_loader(n_batches=2, batch_size=1, H=32, W=32)
+
+    out = evaluate_replay(
+        model=model,
+        data_loader=val_loader,
+        device=torch.device("cpu"),
+        epoch=0, lr=1e-4,
+        filefold_path=None,  # pass None to skip image saving
+        max_ratio=None, ssim_ratio=None, text_ratio=None,
+    )
+    assert len(out) == 6, f"Expected 6-tuple, got {len(out)}"
+    for v in out:
+        assert torch.isfinite(torch.tensor(float(v))), f"Non-finite: {v}"

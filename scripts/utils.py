@@ -917,6 +917,66 @@ def train_one_epoch_replay(model, model_clip, optimizer, lr_scheduler,
 
 
 @torch.no_grad()
+def evaluate_replay(model, data_loader, device, epoch, lr, filefold_path,
+                     max_ratio=None, ssim_ratio=None, text_ratio=None):
+    """Validation on target val loader using generic prompt.
+
+    Mirrors evaluate_recon_dual structure but:
+      - Uses generic prompt for every sample.
+      - Skips per-task text dispatch.
+      - Skips image saving when filefold_path is None.
+
+    Returns: 6-tuple (total, ssim, max, color, text, recon) averaged over steps.
+    """
+    import clip as _clip
+
+    loss_function = fusion_dual_recon_prompt_loss(max_ratio=max_ratio, ssim_ratio=ssim_ratio,
+                                                   text_ratio=text_ratio)
+    model.eval()
+
+    accu_total = torch.zeros(1).to(device)
+    accu_ssim = torch.zeros(1).to(device)
+    accu_max = torch.zeros(1).to(device)
+    accu_color = torch.zeros(1).to(device)
+    accu_text = torch.zeros(1).to(device)
+    accu_recon = torch.zeros(1).to(device)
+
+    if torch.cuda.is_available():
+        loss_function = loss_function.to(device)
+
+    data_iter = tqdm(data_loader, file=sys.stdout) if hasattr(data_loader, "__iter__") else data_loader
+    for step, data in enumerate(data_iter):
+        I_A, I_B, I_A_gt, I_B_gt, _, task, _ = data
+        text_line = [get_generic_prompt()] * len(task)
+        text = _clip.tokenize(text_line).to(device)
+
+        if torch.cuda.is_available():
+            I_A = I_A.to(device); I_B = I_B.to(device)
+            I_A_gt = I_A_gt.to(device); I_B_gt = I_B_gt.to(device)
+
+        I_fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis = model(I_A, I_B, text)
+        loss, l_ssim, l_max, l_color, l_text, l_recon = loss_function(
+            I_A_gt, I_B_gt, I_fused, recon_ir, recon_vis, recon_dec_ir, recon_dec_vis, list(task))
+
+        accu_total += loss
+        accu_ssim += l_ssim.detach(); accu_max += l_max.detach()
+        accu_color += l_color.detach(); accu_text += l_text
+        accu_recon += l_recon
+
+        if hasattr(data_iter, "desc"):
+            data_iter.desc = (
+                "[ft val epoch {}] loss: {:.3f}  ssim: {:.3f}  max: {:.3f}  "
+                "color: {:.3f}  text: {:.3f}  recon: {:.3f}"
+            ).format(epoch, accu_total.item() / (step + 1), accu_ssim.item() / (step + 1),
+                     accu_max.item() / (step + 1), accu_color.item() / (step + 1),
+                     accu_text.item() / (step + 1), accu_recon.item() / (step + 1))
+
+    return (accu_total.item() / (step + 1), accu_ssim.item() / (step + 1),
+            accu_max.item() / (step + 1), accu_color.item() / (step + 1),
+            accu_text.item() / (step + 1), accu_recon.item() / (step + 1))
+
+
+@torch.no_grad()
 def evaluate_recon_dual(model, data_loader, device, epoch, lr, filefold_path,
                         max_ratio=None, ssim_ratio=None, text_ratio=None):
     loss_function = fusion_dual_recon_prompt_loss(max_ratio=max_ratio, ssim_ratio=ssim_ratio,
