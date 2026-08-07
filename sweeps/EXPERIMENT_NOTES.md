@@ -137,10 +137,12 @@ D:/software/anaconda3/envs/xpu/python.exe sweeps/run_generalization.py --sample 
 
 ## v5 smoke (2026-08-07)
 
-Verified FFBlockSCA training pipeline boot. Both runs crash at checkpoint load.
+torch.load fix applied; checkpoint loading now succeeds. Blocked by hardcoded `.cuda()` in loss functions.
 
-- `--use_spatial 1`: data loading succeeds (4× "Loading IVF Fusion ..." banners printed, datasets enumerated). Crashes at `torch.load` (line 134) with `_pickle.UnpicklingError: Weights only load failed`. The pretrained checkpoint contains `argparse.Namespace` (key `args`), which is blocked by PyTorch 2.6+ default `weights_only=True`. Blocked before any training iteration.
-- `--use_spatial 0`: identical failure — same `torch.load` error at line 134. Blocked before any training iteration.
-- Both runs used batch_size=4, epochs=1; full A/B/C runs blocked until fix.
+- `--use_spatial 1`: data loading succeeds (4× "Loading IVF Fusion ..." banners, 659/659 pretrained keys loaded, missing FFBlockSCA/ReconHead keys random-init as expected). Banners "Encoders frozen. Training: FFBlockSCA(use_spatial=True), ..." and "Fine-tuning Text_IF_Recon v5 ..." print correctly. Crashes before first training iteration at `scripts/losses.py:144` — `L_Grad_position.__init__` calls `.cuda()` on a Sobel kernel tensor, but this XPU-only environment has no CUDA. Blocked.
+- `--use_spatial 0`: not re-run separately (uses identical loss-function code path; would hit the same `.cuda()` error).
+- Both runs used batch_size=4, epochs=1; full A/B/C runs blocked until `.cuda()` calls in loss functions are replaced with device-agnostic `.to(device)`.
 
-**Fix required:** `train_fusion_full_recon_v5_ft.py` line 134 needs `weights_only=False` (or the pretrained checkpoint must be re-saved without the `args` key). Line 162 (`--resume` path) likely needs the same fix.
+**torch.load fix (applied, commit 3e98a62):** PyTorch 2.6+ `weights_only=True` default blocked loading the v2-ft checkpoint's `argparse.Namespace`. Added `weights_only=False` to torch.load at lines 134 and 162 of `train_fusion_full_recon_v5_ft.py`.
+
+**New blocker:** `scripts/losses.py:144` hardcodes `.cuda()` in `L_Grad_position.__init__`. The Intel XPU environment (torch 2.10.0+xpu) does not have CUDA enabled. The loss functions (`fusion_loss`, `fusion_dual_recon_prompt_loss`) need all `.cuda()` calls replaced with `.to(device)` to be device-agnostic.
