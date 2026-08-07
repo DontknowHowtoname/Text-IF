@@ -212,6 +212,104 @@ def resolve_ir_vis_dirs(root: str, split: str = "train"):
         f"IR candidates: {ir_candidates}. VIS candidates: {vis_candidates}."
     )
 
+
+def _list_images_by_stem(directory):
+    """Return dict mapping filename stem -> full path for supported images."""
+    try:
+        from natsort import natsorted
+    except Exception:
+        natsorted = sorted
+    files = natsorted([f for f in os.listdir(directory)
+                       if f.lower().endswith(_SUPPORTED_IMAGE_EXTS)])
+    return {os.path.splitext(f)[0]: os.path.join(directory, f) for f in files}
+
+
+def _pair_by_stem(vis_dir, ir_dir):
+    """Pair IR/VIS images by filename stem. Returns (vis_list, ir_list)
+    sorted by stem. Raises if no common stems."""
+    vis_map = _list_images_by_stem(vis_dir)
+    ir_map = _list_images_by_stem(ir_dir)
+    common = sorted(set(vis_map.keys()) & set(ir_map.keys()))
+    if not common:
+        raise RuntimeError(
+            f"No matching image pairs (by stem) between:\n"
+            f"  VIS dir: {vis_dir}  ({len(vis_map)} images)\n"
+            f"  IR dir : {ir_dir}  ({len(ir_map)} images)"
+        )
+    return [vis_map[s] for s in common], [ir_map[s] for s in common]
+
+
+def _train_val_split(vis_list, ir_list, val_ratio=0.2, seed=42):
+    """Deterministic 80/20 split by sorted index. Returns
+    (train_vis, train_ir, val_vis, val_ir)."""
+    import random as _r
+    n = len(vis_list)
+    idx = list(range(n))
+    _r.Random(seed).shuffle(idx)
+    n_val = max(1, int(n * val_ratio)) if n >= 5 else 0
+    val_idx = set(idx[:n_val])
+    train_vis, train_ir, val_vis, val_ir = [], [], [], []
+    for i in range(n):
+        if i in val_idx:
+            val_vis.append(vis_list[i])
+            val_ir.append(ir_list[i])
+        else:
+            train_vis.append(vis_list[i])
+            train_ir.append(ir_list[i])
+    return train_vis, train_ir, val_vis, val_ir
+
+
+def read_data_for_finetune(root: str):
+    """Load IR/VIS pairs for fine-tuning, auto-detecting layout.
+
+    - If <root>/train and <root>/{test|val|eval} both resolve via
+      resolve_ir_vis_dirs, use them as train/val respectively.
+    - If only one split resolves (e.g. TNO with just ir/+vis/), do a
+      deterministic 80/20 split by stem with seed=42.
+
+    Returns:
+        (train_vis, train_ir, val_vis, val_ir): lists of file paths.
+        GT paths are NOT loaded - SingleTaskDataSet uses source images as GT.
+    """
+    # Try resolving both train and eval splits.
+    # IMPORTANT: resolve_ir_vis_dirs returns (ir_dir, vis_dir), not the reverse.
+    train_vis_all = train_ir_all = None
+    train_dirs = None
+    try:
+        train_ir_dir, train_vis_dir = resolve_ir_vis_dirs(root, "train")
+        train_vis_all, train_ir_all = _pair_by_stem(train_vis_dir, train_ir_dir)
+        train_dirs = (os.path.normpath(train_ir_dir), os.path.normpath(train_vis_dir))
+    except FileNotFoundError:
+        pass
+
+    val_vis_all = val_ir_all = None
+    val_dirs = None
+    try:
+        val_ir_dir, val_vis_dir = resolve_ir_vis_dirs(root, "eval")
+        val_vis_all, val_ir_all = _pair_by_stem(val_vis_dir, val_ir_dir)
+        val_dirs = (os.path.normpath(val_ir_dir), os.path.normpath(val_vis_dir))
+    except FileNotFoundError:
+        pass
+
+    # Both resolved AND they are physically different directories -> use as-is.
+    # If they resolved to the same dirs (e.g. TNO single-split layout where
+    # Strategy 2 matches for both "train" and "eval"), fall through to 80/20.
+    if (train_vis_all is not None and val_vis_all is not None
+            and train_dirs != val_dirs):
+        return train_vis_all, train_ir_all, val_vis_all, val_ir_all
+
+    if train_vis_all is None and val_vis_all is None:
+        # Neither resolved - real failure.
+        raise FileNotFoundError(
+            f"Could not resolve any IR/VIS layout under {root}. "
+            f"See resolve_ir_vis_dirs() for supported layouts."
+        )
+
+    # Exactly one split resolved - do deterministic 80/20.
+    vis_list = train_vis_all if train_vis_all is not None else val_vis_all
+    ir_list = train_ir_all if train_ir_all is not None else val_ir_all
+    return _train_val_split(vis_list, ir_list, val_ratio=0.2, seed=42)
+
 # Fixed generic prompt for fine-tuning on standard IVIF benchmarks that lack
 # per-task text.txt files. Matches the v2-ft val-time sentence prefix so the
 # token distribution stays close to pretraining.

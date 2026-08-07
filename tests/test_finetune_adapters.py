@@ -170,3 +170,48 @@ def test_resolve_ir_vis_dirs_raises_when_unresolvable(tmp_path):
     (tmp_path / "junk").mkdir()
     with pytest.raises(FileNotFoundError):
         resolve_ir_vis_dirs(str(tmp_path / "junk"), "train")
+
+
+def test_read_data_for_finetune_pairs_by_stem(tno_layout):
+    """read_data_for_finetune must pair ir/vis images by filename stem and
+    return sorted lists of equal length."""
+    from scripts.utils import read_data_for_finetune
+    train_vis, train_ir, val_vis, val_ir = read_data_for_finetune(str(tno_layout))
+    assert len(train_vis) == len(train_ir), "vis/ir must be paired 1:1"
+    # With only 2 images and an 80/20 split, expect 2 train + 0 val OR
+    # 1 train + 1 val depending on rounding; both are acceptable.
+    assert len(train_vis) >= 1
+    # Train and val should be disjoint
+    train_stems = {os.path.splitext(os.path.basename(p))[0] for p in train_vis}
+    val_stems = {os.path.splitext(os.path.basename(p))[0] for p in val_vis}
+    assert train_stems.isdisjoint(val_stems), "train/val must not share stems"
+
+
+def test_read_data_for_finetune_handles_mixed_extensions(tmp_path):
+    """RoadScene-style: ir/*.png + vis/*.jpg, same stems."""
+    from PIL import Image
+    from scripts.utils import read_data_for_finetune
+
+    root = tmp_path / "RoadScene"
+    (root / "ir").mkdir(parents=True, exist_ok=True)
+    (root / "vis").mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (16, 16)).save(root / "ir" / "0001.png")
+    Image.new("RGB", (16, 16)).save(root / "vis" / "0001.jpg")
+    Image.new("RGB", (16, 16)).save(root / "ir" / "0002.png")
+    Image.new("RGB", (16, 16)).save(root / "vis" / "0002.jpg")
+
+    train_vis, train_ir, val_vis, val_ir = read_data_for_finetune(str(root))
+    # Each pair should share a stem despite different extensions.
+    for v, ir in zip(train_vis, train_ir):
+        assert os.path.splitext(os.path.basename(v))[0] == \
+               os.path.splitext(os.path.basename(ir))[0]
+
+
+def test_read_data_for_finetune_uses_test_split_when_available(msrs_layout):
+    """When <root>/train and <root>/test both exist, train->train, test->val."""
+    from scripts.utils import read_data_for_finetune
+    train_vis, train_ir, val_vis, val_ir = read_data_for_finetune(str(msrs_layout))
+    # Train samples should come from train/ split
+    assert all("train" in p for p in train_vis)
+    # Val samples should come from test/ split (the eval alias)
+    assert all("test" in p for p in val_vis) if val_vis else True
