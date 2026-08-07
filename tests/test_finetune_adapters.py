@@ -215,3 +215,68 @@ def test_read_data_for_finetune_uses_test_split_when_available(msrs_layout):
     assert all("train" in p for p in train_vis)
     # Val samples should come from test/ split (the eval alias)
     assert all("test" in p for p in val_vis) if val_vis else True
+
+
+def test_single_task_dataset_returns_generic_class_key(tmp_path):
+    """SingleTaskDataSet must always return class_key='generic' and use source
+    images as GT (auto-GT)."""
+    from PIL import Image
+    from data.prompt_dataset import SingleTaskDataSet
+
+    # Make two 96x96 images (RandomCrop(96) requires >=96).
+    vis_path = tmp_path / "vis.png"
+    ir_path = tmp_path / "ir.png"
+    Image.new("RGB", (96, 96), (10, 20, 30)).save(vis_path)
+    Image.new("RGB", (96, 96), (40, 50, 60)).save(ir_path)
+
+    ds = SingleTaskDataSet([str(vis_path)], [str(ir_path)])
+    assert len(ds) == 1
+
+    item = ds[0]
+    # Returns: (image_A=vis, image_B=ir, A_gt, B_gt, A_full, class_key, name)
+    assert len(item) == 7
+    image_A, image_B, image_A_gt, image_B_gt, image_full, class_key, name = item
+    assert class_key == "generic"
+    assert name == "vis"
+
+
+def test_single_task_dataset_auto_gt_uses_source_image(tmp_path):
+    """Without explicit gt lists, A_gt must equal A (pixel-identical)."""
+    from PIL import Image
+    import numpy as np
+    from data.prompt_dataset import SingleTaskDataSet
+
+    vis_path = tmp_path / "vis.png"
+    ir_path = tmp_path / "ir.png"
+    Image.new("RGB", (96, 96), (10, 20, 30)).save(vis_path)
+    Image.new("RGB", (96, 96), (40, 50, 60)).save(ir_path)
+
+    ds = SingleTaskDataSet([str(vis_path)], [str(ir_path)])
+    image_A, image_B, image_A_gt, image_B_gt, _, _, _ = ds[0]
+    # Without transform, __getitem__ returns PIL images.
+    assert list(image_A.getdata()) == list(image_A_gt.getdata()), "A_gt must equal A (auto-GT)"
+    assert list(image_B.getdata()) == list(image_B_gt.getdata()), "B_gt must equal B (auto-GT)"
+
+
+def test_single_task_dataset_collate_fn():
+    """collate_fn must stack image tensors and pass through class_key + name."""
+    import torch
+    import transforms as T
+    from PIL import Image
+    from data.prompt_dataset import SingleTaskDataSet
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        vp = f"{td}/v.png"; ip = f"{td}/i.png"
+        Image.new("RGB", (96, 96)).save(vp)
+        Image.new("RGB", (96, 96)).save(ip)
+
+        transform = T.Compose([T.RandomCrop(96), T.ToTensor()])
+        ds = SingleTaskDataSet([vp], [ip], transform=transform)
+        loader = torch.utils.data.DataLoader(ds, batch_size=1, collate_fn=SingleTaskDataSet.collate_fn)
+        batch = next(iter(loader))
+        # (A, B, A_gt, B_gt, A_full, class_keys, names)
+        assert len(batch) == 7
+        A, B, A_gt, B_gt, A_full, class_keys, names = batch
+        assert A.shape == (1, 3, 96, 96)
+        assert class_keys == ("generic",)

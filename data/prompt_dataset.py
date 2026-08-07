@@ -187,3 +187,60 @@ class PromptDataSetWithMask(PromptDataSet):
         images_full = torch.stack(images_full, dim=0)
         masks = torch.stack(masks, dim=0)
         return images_A, images_B, images_A_gt, images_B_gt, images_full, class_keys, names, masks
+
+
+class SingleTaskDataSet(Dataset):
+    """Single-task dataset for fine-tuning on standard IVIF benchmarks.
+
+    Unlike PromptDataSet, this class:
+      - Has no concept of 4 degradation tasks — every sample returns class_key="generic".
+      - Has no separate GT directory — source Vis/IR images ARE the GT
+        (auto-GT strategy: A_gt = A, B_gt = B).
+      - Takes parallel vis/ir path lists paired by index.
+
+    Returned tuple per sample (matches PromptDataSet for downstream compat):
+        (image_A, image_B, image_A_gt, image_B_gt, image_full, "generic", name)
+
+    where image_A = Vis, image_B = IR, image_full = Vis (same convention as PromptDataSet).
+    """
+
+    def __init__(self, vis_path_list, ir_path_list, phase="train", transform=None):
+        assert len(vis_path_list) == len(ir_path_list), (
+            f"vis/ir length mismatch: {len(vis_path_list)} vs {len(ir_path_list)}"
+        )
+        self.vis = vis_path_list
+        self.ir = ir_path_list
+        self.phase = phase
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.vis)
+
+    def __getitem__(self, idx):
+        image_A_path = self.vis[idx]
+        image_B_path = self.ir[idx]
+
+        image_A = Image.open(image_A_path).convert(mode='RGB')
+        image_B = Image.open(image_B_path).convert(mode='RGB')
+        # Auto-GT: source images serve as their own ground truth.
+        image_A_gt = image_A
+        image_B_gt = image_B
+        image_full = image_A
+
+        if self.transform is not None:
+            image_A, image_B, image_A_gt, image_B_gt, image_full, _ = self.transform(
+                image_A, image_B, image_A_gt, image_B_gt, image_full
+            )
+
+        name = image_A_path.replace("\\", "/").split("/")[-1].split(".")[0]
+        return image_A, image_B, image_A_gt, image_B_gt, image_full, "generic", name
+
+    @staticmethod
+    def collate_fn(batch):
+        images_A, images_B, images_A_gt, images_B_gt, images_full, class_keys, name = zip(*batch)
+        images_A = torch.stack(images_A, dim=0)
+        images_B = torch.stack(images_B, dim=0)
+        images_A_gt = torch.stack(images_A_gt, dim=0)
+        images_B_gt = torch.stack(images_B_gt, dim=0)
+        images_full = torch.stack(images_full, dim=0)
+        return images_A, images_B, images_A_gt, images_B_gt, images_full, class_keys, name
