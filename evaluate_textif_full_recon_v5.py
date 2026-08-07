@@ -102,9 +102,9 @@ def clear_device_cache(device: torch.device):
     gc.collect()
 
 
-def load_model(weights_path: str, device: torch.device):
+def load_model(weights_path: str, device: torch.device, use_spatial: bool = True):
     model_clip, _ = clip.load("ViT-B/32", device=device)
-    model = create_model(model_clip, use_spatial=bool(args.use_spatial)).to(device)
+    model = create_model(model_clip, use_spatial=use_spatial).to(device)
 
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
@@ -310,7 +310,7 @@ def main(args):
     print(f"VIS dir: {vis_dir}")
     print(f"Image pairs to evaluate: {len(image_list)}")
 
-    model = load_model(args.weights_path, device)
+    model = load_model(args.weights_path, device, use_spatial=bool(args.use_spatial))
     text = clip.tokenize([args.input_text]).to(device)
 
     detail_rows = []
