@@ -918,7 +918,7 @@ def train_one_epoch_replay(model, model_clip, optimizer, lr_scheduler,
 
 @torch.no_grad()
 def evaluate_replay(model, data_loader, device, epoch, lr, filefold_path,
-                     max_ratio=None, ssim_ratio=None, text_ratio=None):
+                     recon_weight=1.0, max_ratio=None, ssim_ratio=None, text_ratio=None):
     """Validation on target val loader using generic prompt.
 
     Mirrors evaluate_recon_dual structure but:
@@ -931,10 +931,13 @@ def evaluate_replay(model, data_loader, device, epoch, lr, filefold_path,
         selection; image dumps are not needed.
 
     Returns: 6-tuple (total, ssim, max, color, text, recon) averaged over steps.
+        recon_weight: Weight for dual-path reconstruction loss (should match
+            train_one_epoch_replay's recon_weight for comparable TensorBoard curves).
     """
     import clip as _clip
 
-    loss_function = fusion_dual_recon_prompt_loss(max_ratio=max_ratio, ssim_ratio=ssim_ratio,
+    loss_function = fusion_dual_recon_prompt_loss(recon_weight=recon_weight,
+                                                   max_ratio=max_ratio, ssim_ratio=ssim_ratio,
                                                    text_ratio=text_ratio)
     model.eval()
 

@@ -207,6 +207,7 @@ def main(args):
                 model=model, data_loader=val_loader, device=device,
                 epoch=epoch, lr=lr,
                 filefold_path=None,
+                recon_weight=args.recon_weight,
                 max_ratio=args.max_ratio, ssim_ratio=args.ssim_ratio, text_ratio=args.text_ratio)
 
             tb_writer.add_scalar("val_total_loss", val_loss, epoch)
