@@ -115,6 +115,103 @@ def read_data(root: str):
     val_low_light_path_list = [val_visible_path, val_infrared_path]
     return train_low_light_path_list, val_low_light_path_list
 
+# ====================== Fine-tune Dataset Layout Adapter ======================
+# Mirrors evaluate_textif_full_recon_v2.py:_resolve_ir_vis_dirs (lines 208-244)
+# so users do not have to reformat TNO/MSRS/M3FD/RoadScene/LLVIP into the
+# EMS_lite train/{Visible,Infrared,Visible_gt,Infrared_gt}/ layout.
+
+_SUPPORTED_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+
+def _dir_has_image(directory: str) -> bool:
+    """Return True if *directory* contains at least one image file directly.
+
+    Used by resolve_ir_vis_dirs Strategy 2 to avoid matching a modality folder
+    that only wraps split sub-directories (e.g. LLVIP's <root>/infrared/ which
+    holds train/ and test/ rather than images).
+    """
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return False
+    for name in entries:
+        if name.lower().endswith(_SUPPORTED_IMAGE_EXTS):
+            return True
+    return False
+
+
+def resolve_ir_vis_dirs(root: str, split: str = "train"):
+    """Locate IR/VIS directories under <root>/<split>/ or <root>/.
+
+    Tries in order:
+      1. <root>/<split>/<ir>+<vis>            (e.g. MSRS train/ir + train/vi)
+      2. <root>/<ir>+<vis>                     (e.g. TNO ir/ + vis/)
+      3. <root>/<ir>/<split>+<vis>/<split>     (e.g. LLVIP infrared/train + visible/train)
+
+    IR candidates: ["ir", "infrared"]
+    VIS candidates: ["vis", "visible", "vi"]
+
+    Args:
+        root: dataset root directory.
+        split: "train" or "eval". For "eval", also tries "test" and "val" as
+            alternative split names (different datasets use different names).
+
+    Returns:
+        (ir_dir, vis_dir): absolute paths to the resolved directories.
+
+    Raises:
+        FileNotFoundError if no IR/VIS pair is found.
+    """
+    ir_candidates = ["ir", "infrared"]
+    vis_candidates = ["vis", "visible", "vi"]
+
+    # For "eval", try the requested name first, then common alternatives.
+    split_names = [split]
+    if split == "eval":
+        split_names += ["test", "val"]
+    elif split == "train":
+        # Some datasets only have a single split; fall back to no-split layout.
+        pass
+
+    # Strategy 1: <root>/<split>/<ir>+<vis>
+    for sn in split_names:
+        split_dir = os.path.join(root, sn)
+        if os.path.isdir(split_dir):
+            for ir_name in ir_candidates:
+                for vis_name in vis_candidates:
+                    ir_dir = os.path.join(split_dir, ir_name)
+                    vis_dir = os.path.join(split_dir, vis_name)
+                    if os.path.isdir(ir_dir) and os.path.isdir(vis_dir):
+                        return ir_dir, vis_dir
+
+    # Strategy 2: <root>/<ir>+<vis>  (no split subfolder)
+    # Require at least one image file directly inside, so we don't short-circuit
+    # on LLVIP-style <root>/infrared/ (which only contains train/ test/ subdirs)
+    # when the caller actually wants <root>/infrared/<split>/ (Strategy 3).
+    for ir_name in ir_candidates:
+        for vis_name in vis_candidates:
+            ir_dir = os.path.join(root, ir_name)
+            vis_dir = os.path.join(root, vis_name)
+            if os.path.isdir(ir_dir) and os.path.isdir(vis_dir):
+                if _dir_has_image(ir_dir) and _dir_has_image(vis_dir):
+                    return ir_dir, vis_dir
+
+    # Strategy 3: <root>/<ir>/<split>+<vis>/<split>  (LLVIP-style)
+    for sn in split_names:
+        for ir_name in ir_candidates:
+            for vis_name in vis_candidates:
+                ir_dir = os.path.join(root, ir_name, sn)
+                vis_dir = os.path.join(root, vis_name, sn)
+                if os.path.isdir(ir_dir) and os.path.isdir(vis_dir):
+                    return ir_dir, vis_dir
+
+    raise FileNotFoundError(
+        f"Could not resolve IR/VIS directories under {root} for split='{split}'. "
+        f"Tried layouts: <root>/{split}/<ir>+<vis>, <root>/<ir>+<vis>, "
+        f"<root>/<ir>/{split}+<vis>/{split}. "
+        f"IR candidates: {ir_candidates}. VIS candidates: {vis_candidates}."
+    )
+
 # Fixed generic prompt for fine-tuning on standard IVIF benchmarks that lack
 # per-task text.txt files. Matches the v2-ft val-time sentence prefix so the
 # token distribution stays close to pretraining.

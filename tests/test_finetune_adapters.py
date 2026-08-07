@@ -100,3 +100,73 @@ def test_task_prompt_returns_random_line_when_lines_present(monkeypatch):
     monkeypatch.setattr(su.random, "choice", lambda seq: seq[0])
     p = su.get_low_light_prompt()
     assert p == "hello world"
+
+
+def _make_image(path):
+    """Write a 16x16 black PNG so file enumeration finds it."""
+    from PIL import Image
+    img = Image.new("RGB", (16, 16), (0, 0, 0))
+    parent = Path(path).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    img.save(path)
+
+
+@pytest.fixture
+def tno_layout(tmp_path):
+    """Layout 1: <root>/ir/ + <root>/vis/ with same-stem PNGs."""
+    root = tmp_path / "TNO"
+    _make_image(root / "ir" / "0001.png")
+    _make_image(root / "vis" / "0001.png")
+    _make_image(root / "ir" / "0002.png")
+    _make_image(root / "vis" / "0002.png")
+    return root
+
+
+@pytest.fixture
+def msrs_layout(tmp_path):
+    """Layout 3: <root>/train/{ir,vi}/ + <root>/test/{ir,vi}/."""
+    root = tmp_path / "MSRS"
+    for split in ["train", "test"]:
+        _make_image(root / split / "ir" / f"{split}_0.png")
+        _make_image(root / split / "vi" / f"{split}_0.png")
+    return root
+
+
+@pytest.fixture
+def llvip_layout(tmp_path):
+    """Layout 2: <root>/infrared/ + <root>/visible/, each with train/test subdir."""
+    root = tmp_path / "LLVIP"
+    for split in ["train", "test"]:
+        _make_image(root / "infrared" / split / f"img_{split}.png")
+        _make_image(root / "visible" / split / f"img_{split}.png")
+    return root
+
+
+def test_resolve_ir_vis_dirs_tno_layout(tno_layout):
+    from scripts.utils import resolve_ir_vis_dirs
+    ir, vis = resolve_ir_vis_dirs(str(tno_layout), "train")
+    assert os.path.basename(ir) == "ir"
+    assert os.path.basename(vis) == "vis"
+
+
+def test_resolve_ir_vis_dirs_msrs_train_split(msrs_layout):
+    from scripts.utils import resolve_ir_vis_dirs
+    ir, vis = resolve_ir_vis_dirs(str(msrs_layout), "train")
+    # Should pick the train split.
+    assert os.path.basename(os.path.dirname(ir)) == "train"
+    assert os.path.basename(ir) == "ir"
+    assert os.path.basename(vis) == "vi"
+
+
+def test_resolve_ir_vis_dirs_llvip_train_split(llvip_layout):
+    from scripts.utils import resolve_ir_vis_dirs
+    ir, vis = resolve_ir_vis_dirs(str(llvip_layout), "train")
+    assert ir.endswith(os.path.join("infrared", "train"))
+    assert vis.endswith(os.path.join("visible", "train"))
+
+
+def test_resolve_ir_vis_dirs_raises_when_unresolvable(tmp_path):
+    from scripts.utils import resolve_ir_vis_dirs
+    (tmp_path / "junk").mkdir()
+    with pytest.raises(FileNotFoundError):
+        resolve_ir_vis_dirs(str(tmp_path / "junk"), "train")
