@@ -33,11 +33,11 @@ import transforms as T
 
 
 DATASET_CONFIGS = {
-    "TNO":       "./dataset/TNO",
-    "MSRS":      "./dataset/MSRS",
-    "M3FD":      "./dataset/M3FD",
-    "RoadScene": "./dataset/RoadScene",
-    "LLVIP":     "./dataset/LLVIP",
+    "TNO":       "./dataset/TNO",            # root/{ir,vi} + test/{ir,vis}
+    "MSRS":      "./dataset/MSRS-main",      # train/{ir,vi} + test/{ir,vi}
+    "M3FD":      "./dataset/M3FD_Detection", # {infrared,visible}/{train,test}
+    "RoadScene": "./dataset/RoadScene",      # root/{infrared,visible}  (80/20 fallback)
+    "LLVIP":     "./dataset/LLVIP",          # {infrared,visible}/{train,test}
 }
 
 
