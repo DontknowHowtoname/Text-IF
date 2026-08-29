@@ -30,6 +30,7 @@ from scripts.utils import (
     train_one_epoch_replay, evaluate_replay, create_lr_scheduler,
 )
 import transforms as T
+from model.Text_IF_recon_model_2 import ABLATION_MODEL_KWARGS
 
 
 DATASET_CONFIGS = {
@@ -39,6 +40,24 @@ DATASET_CONFIGS = {
     "RoadScene": "./dataset/RoadScene",      # root/{infrared,visible}  (80/20 fallback)
     "LLVIP":     "./dataset/LLVIP",          # {infrared,visible}/{train,test}
 }
+
+
+def resolve_ablation(args):
+    """Map --ablation name to model kwargs / training switches.
+
+    Pure function (unit-testable): returns
+      {"model_kwargs": dict for Text_IF_Recon constructor,
+       "freeze_encoders": bool,
+       "recon_weight": float (0.0 forced for no_dual_recon)}
+    """
+    name = args.ablation
+    if name not in ABLATION_MODEL_KWARGS:
+        raise ValueError(f"Unknown --ablation: {name}")
+    return {
+        "model_kwargs": dict(ABLATION_MODEL_KWARGS[name]),
+        "freeze_encoders": name != "unfreeze_encoder",
+        "recon_weight": 0.0 if name == "no_dual_recon" else args.recon_weight,
+    }
 
 
 def _build_target_datasets(dataset_root, data_transform):
@@ -96,8 +115,8 @@ def main(args):
     if args.output_dir is not None:
         filefold_path = args.output_dir
     else:
-        filefold_path = "./experiments/finetune_{}_{}_{}".format(
-            args.model_version, args.dataset_name, file_name)
+        filefold_path = "./experiments/ablation_{}_{}_{}".format(
+            args.ablation, args.dataset_name, file_name)
     os.makedirs(filefold_path, exist_ok=True)
     for sub in ["img", "weights", "log"]:
         os.makedirs(os.path.join(filefold_path, sub), exist_ok=True)
@@ -139,19 +158,21 @@ def main(args):
     else:
         raise ValueError(f"Unknown --model_version: {args.model_version}")
 
+    abl = resolve_ablation(args)
     use_spatial = bool(args.use_spatial) if args.model_version == "v5" else False
     if args.model_version == "v5":
         model = create_model(model_clip, use_spatial=use_spatial).to(device)
     else:
-        model = create_model(model_clip).to(device)
+        model = create_model(model_clip, **abl["model_kwargs"]).to(device)
 
-    # Freeze CLIP + encoders
-    for param in model.base.model_clip.parameters():
-        param.requires_grad = False
-    for param in model.base.encoder_A.parameters():
-        param.requires_grad = False
-    for param in model.base.encoder_B.parameters():
-        param.requires_grad = False
+    # Freeze CLIP + encoders (skipped for the unfreeze_encoder ablation)
+    if abl["freeze_encoders"]:
+        for param in model.base.model_clip.parameters():
+            param.requires_grad = False
+        for param in model.base.encoder_A.parameters():
+            param.requires_grad = False
+        for param in model.base.encoder_B.parameters():
+            param.requires_grad = False
 
     # Load v2-ft weights (reuse v5-ft's key-remap logic)
     if args.weights != "":
@@ -190,7 +211,7 @@ def main(args):
             model=model, model_clip=model_clip, optimizer=optimizer,
             lr_scheduler=lr_scheduler, target_loader=target_loader,
             ems_loader=ems_loader, replay_ratio=args.replay_ratio,
-            device=device, epoch=epoch, recon_weight=args.recon_weight,
+            device=device, epoch=epoch, recon_weight=abl["recon_weight"],
             max_ratio=args.max_ratio, ssim_ratio=args.ssim_ratio, text_ratio=args.text_ratio)
 
         tb_writer.add_scalar("train_total_loss", train_loss, epoch)
@@ -207,7 +228,7 @@ def main(args):
                 model=model, data_loader=val_loader, device=device,
                 epoch=epoch, lr=lr,
                 filefold_path=None,
-                recon_weight=args.recon_weight,
+                recon_weight=abl["recon_weight"],
                 max_ratio=args.max_ratio, ssim_ratio=args.ssim_ratio, text_ratio=args.text_ratio)
 
             tb_writer.add_scalar("val_total_loss", val_loss, epoch)
@@ -251,6 +272,9 @@ if __name__ == "__main__":
     parser.add_argument("--ssim_ratio", type=float, default=None)
     parser.add_argument("--text_ratio", type=float, default=None)
     parser.add_argument("--use_spatial", type=int, default=1, choices=[0, 1], help="v5 only")
+    parser.add_argument("--ablation", type=str, default="full",
+                        choices=list(ABLATION_MODEL_KWARGS.keys()),
+                        help="Ablation arm (paper §4.3)")
     parser.add_argument("--replay_ratio", type=float, default=0.2,
                         help="Probability of an EMS replay step per target step")
     parser.add_argument("--ems_root", type=str, default="./dataset/EMS_lite",
