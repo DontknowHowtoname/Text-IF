@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from model.Text_IF_recon_model_2 import ABLATION_MODEL_KWARGS
 from sweeps import run_ablation
 from sweeps.run_ablation import (
     ARMS,
@@ -37,6 +38,11 @@ def test_arms_order_and_labels():
     assert ARMS == ["full", "no_fdblock", "no_dual_recon", "no_text",
                     "ff_feature_fusion", "unfreeze_encoder"]
     assert len(ARM_LABELS) == len(ARMS)
+
+
+def test_arms_match_model_kwargs_vocabulary():
+    # adding a 7th arm in one place only must fail loudly
+    assert set(ARMS) == set(ABLATION_MODEL_KWARGS.keys())
 
 
 def test_build_train_cmd():

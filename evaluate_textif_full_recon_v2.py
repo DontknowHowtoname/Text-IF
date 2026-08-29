@@ -101,6 +101,31 @@ def clear_device_cache(device: torch.device):
     gc.collect()
 
 
+def validate_checkpoint_arm(checkpoint, ablation):
+    """Raise ValueError if the checkpoint was trained under a different ablation arm.
+
+    Pure helper (no torch/CLIP state needed) so it is unit-testable.
+    Handles checkpoints whose saved ``args`` is a Namespace (saved via
+    ``vars(args)``-free ``torch.save``) or a dict; legacy checkpoints without
+    an ``args`` field are skipped. Returns the arm recorded in the checkpoint
+    (or None if absent).
+    """
+    ckpt_args = checkpoint.get("args") if isinstance(checkpoint, dict) else None
+    ckpt_arm = None
+    if isinstance(ckpt_args, dict):
+        ckpt_arm = ckpt_args.get("ablation")
+    elif ckpt_args is not None:
+        ckpt_arm = getattr(ckpt_args, "ablation", None)
+    if ckpt_arm is not None and ckpt_arm != ablation:
+        raise ValueError(
+            f"Ablation arm mismatch: checkpoint was trained with "
+            f"--ablation {ckpt_arm!r} but evaluation requested --ablation "
+            f"{ablation!r}. Re-run with --ablation {ckpt_arm} or use a "
+            f"checkpoint trained under {ablation!r}."
+        )
+    return ckpt_arm
+
+
 def load_model(weights_path: str, device: torch.device, ablation: str = "full"):
     if ablation not in ABLATION_MODEL_KWARGS:
         raise ValueError(f"Unknown --ablation: {ablation}")
@@ -108,6 +133,7 @@ def load_model(weights_path: str, device: torch.device, ablation: str = "full"):
     model = create_model(model_clip, **ABLATION_MODEL_KWARGS[ablation]).to(device)
 
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
+    validate_checkpoint_arm(checkpoint, ablation)
     state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
 
     clean_state = {}
