@@ -20,6 +20,7 @@ FUSION_DIRS = {
     "textif_full_recon_v2_eval_M3FD":     "full_recon_v2 @ M3FD",
     "textif_full_recon_v2_eval_MSRS":     "full_recon_v2 @ MSRS",
     "textif_full_recon_v2_eval_RoadScene":"full_recon_v2 @ RoadScene",
+    "textif_full_recon_v2_eval_TNO":      "full_recon_v2 @ TNO",
 }
 
 DETECTION_DIRS = {
