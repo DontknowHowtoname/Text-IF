@@ -13,3 +13,4 @@ references/**
 docs/**
 paper/**
 sweeps/out/**
+.worktrees/
