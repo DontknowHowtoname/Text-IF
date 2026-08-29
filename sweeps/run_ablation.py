@@ -127,13 +127,13 @@ def aggregate(out_root: Path) -> Path:
         row = {"配置": ARM_LABELS[arm]}
         summary = out_root / arm / "eval" / "evaluation_summary.csv"
         if summary.is_file():
-            with summary.open() as f:
+            with summary.open(encoding="utf-8-sig") as f:
                 for r in csv.DictReader(f):
                     if r["metric"] in TABLE_METRICS:
                         row[r["metric"]] = float(r["average"])
         det = out_root / arm / "detection" / "detection_summary.csv"
         if det.is_file():
-            with det.open() as f:
+            with det.open(encoding="utf-8-sig") as f:
                 for r in csv.DictReader(f):
                     if r["Metric"] == "mAP@0.5":
                         row["mAP@0.5"] = float(r["Value"])
