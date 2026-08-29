@@ -21,6 +21,7 @@ from tqdm import tqdm
 import clip
 
 from model.Text_IF_recon_model_2 import Text_IF_Recon as create_model
+from model.Text_IF_recon_model_2 import ABLATION_MODEL_KWARGS
 
 METRIC_DIR = os.path.join(os.path.dirname(__file__), "metric")
 if METRIC_DIR not in sys.path:
@@ -100,9 +101,11 @@ def clear_device_cache(device: torch.device):
     gc.collect()
 
 
-def load_model(weights_path: str, device: torch.device):
+def load_model(weights_path: str, device: torch.device, ablation: str = "full"):
+    if ablation not in ABLATION_MODEL_KWARGS:
+        raise ValueError(f"Unknown --ablation: {ablation}")
     model_clip, _ = clip.load("ViT-B/32", device=device)
-    model = create_model(model_clip).to(device)
+    model = create_model(model_clip, **ABLATION_MODEL_KWARGS[ablation]).to(device)
 
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
@@ -308,7 +311,7 @@ def main(args):
     print(f"VIS dir: {vis_dir}")
     print(f"Image pairs to evaluate: {len(image_list)}")
 
-    model = load_model(args.weights_path, device)
+    model = load_model(args.weights_path, device, ablation=args.ablation)
     text = clip.tokenize([args.input_text]).to(device)
 
     detail_rows = []
@@ -394,6 +397,9 @@ if __name__ == "__main__":
     parser.add_argument("--sample", type=int, default=20, help="Number of sampled images (0 means all)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
     parser.add_argument("--device", type=str, default="auto", help="Device: auto/xpu/cuda/cpu")
+    parser.add_argument("--ablation", type=str, default="full",
+                        choices=list(ABLATION_MODEL_KWARGS.keys()),
+                        help="Ablation arm; must match how the checkpoint was trained")
 
     args = parser.parse_args()
     main(args)
