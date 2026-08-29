@@ -1,8 +1,9 @@
 """§4.3 ablation pipeline: train -> fusion metrics -> YOLO mAP, per arm.
 
-Idempotent: each step is skipped when its output file already exists
-(same convention as run_generalization.py), so the script is safe to
-re-run after partial failures.
+Idempotent: each step is skipped when its completion marker already exists
+(train: .done sentinel written only after a successful train subprocess;
+eval/detect: their summary CSVs), so the script is safe to re-run after
+partial failures.
 
 Example (CUDA training box):
     python sweeps/run_ablation.py \
@@ -16,6 +17,7 @@ import argparse
 import csv
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -41,7 +43,7 @@ def _p(path) -> str:
     return Path(path).as_posix()
 
 
-def build_train_cmd(arm, repo, base_weights, dataset_root, epochs, out_root):
+def build_train_cmd(arm, repo, base_weights, epochs, out_root):
     return [sys.executable, "-u", _p(repo / "train_finetune_v2ft.py"),
             "--dataset_name", "LLVIP", "--model_version", "v2",
             "--ablation", arm,
@@ -73,7 +75,8 @@ def build_detect_cmd(arm, repo, out_root, ann_dir, yolo_weights, device):
 def _run(cmd, log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     print("  $ " + " ".join(cmd))
-    with log_path.open("w") as logf:
+    # append: a re-run of a failed arm must not destroy the failure evidence
+    with log_path.open("a") as logf:
         proc = subprocess.run(cmd, cwd=str(REPO), stdout=logf,
                               stderr=subprocess.STDOUT, text=True,
                               encoding="utf-8", errors="replace")
@@ -83,19 +86,28 @@ def _run(cmd, log_path: Path) -> int:
 
 
 def run_arm(arm, args, repo, out_root) -> int:
-    ckpt = out_root / arm / "train" / "weights" / "checkpoint.pth"
+    # Train completion is gated on a sentinel written ONLY after a successful
+    # train subprocess. checkpoint.pth appears mid-training (saved on every val
+    # improvement from ~epoch 2), so gating on it would silently skip
+    # re-training after an interrupted run and evaluate a partial model.
+    done = out_root / arm / "train" / ".done"
     summary = out_root / arm / "eval" / "evaluation_summary.csv"
     det = out_root / arm / "detection" / "detection_summary.csv"
 
     rc = 0
     if args.stage in ("all", "train"):
-        if ckpt.is_file():
-            print(f"[{arm}] skip train (exists): {ckpt}")
+        if done.is_file():
+            print(f"[{arm}] skip train (done): {done}")
         else:
             print(f"[{arm}] train ...")
             rc |= _run(build_train_cmd(arm, repo, args.base_weights,
-                                       args.dataset_root, args.epochs, out_root),
+                                       args.epochs, out_root),
                        out_root / arm / "train.log")
+            if rc == 0:
+                done.parent.mkdir(parents=True, exist_ok=True)
+                done.write_text(
+                    datetime.now().isoformat(timespec="seconds") + "\n",
+                    encoding="utf-8")
     if rc:
         return rc
 
@@ -173,7 +185,9 @@ def main() -> None:
     ap.add_argument("--base_weights", type=str, required=True,
                     help="Shared v2-ft checkpoint all arms fine-tune from")
     ap.add_argument("--dataset_root", type=str, default="dataset/LLVIP",
-                    help="LLVIP root ({infrared,visible}/{train,test})")
+                    help="LLVIP root ({infrared,visible}/{train,test}); used by "
+                         "the EVAL stage only (training resolves LLVIP via its "
+                         "own DATASET_CONFIGS)")
     ap.add_argument("--ann_dir", type=str,
                     default="D:/StudyFiles/MachineLearning/datasets/LLVIP/Annotations",
                     help="LLVIP VOC annotations for detection eval")
@@ -200,16 +214,19 @@ def main() -> None:
     repo = REPO
     out_root = Path(args.out_root) if args.out_root else repo / "sweeps" / "out" / "ablation"
     arms = ([s.strip() for s in args.arms.split(",")] if args.arms else ARMS)
+    # fail fast: validate all arm names before launching any subprocess,
+    # so a typo cannot waste hours of training before exiting
+    unknown = [a for a in arms if a not in ARMS]
+    if unknown:
+        print(f"ERROR: unknown arms {unknown} (valid: {ARMS})", file=sys.stderr)
+        sys.exit(2)
 
     failures = []
     for arm in arms:
-        if arm not in ARMS:
-            print(f"ERROR: unknown arm {arm}", file=sys.stderr)
-            sys.exit(2)
         if args.dry_run:
             if args.stage in ("all", "train"):
                 print(" ".join(build_train_cmd(arm, repo, args.base_weights,
-                                               args.dataset_root, args.epochs, out_root)))
+                                               args.epochs, out_root)))
             if args.stage in ("all", "eval"):
                 print(" ".join(build_eval_cmd(arm, repo, args.dataset_root, out_root,
                                               args.sample, args.seed, args.device)))
