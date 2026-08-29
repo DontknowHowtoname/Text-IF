@@ -50,3 +50,28 @@ def test_ablation_model_kwargs_mapping():
     assert set(ABLATION_MODEL_KWARGS) == {
         "full", "no_fdblock", "no_dual_recon", "no_text",
         "ff_feature_fusion", "unfreeze_encoder"}
+
+
+def test_forward_smoke_with_flags():
+    """Forward pass under all ablation flags, without real CLIP.
+
+    no_text=True skips base.get_text_feature and prompt guidance entirely,
+    so a stub CLIP module is enough. disable_ffblock/disable_fdblock
+    exercise the fallback fusion / degenerate decoupling branches.
+    """
+    model = Text_IF_Recon(_StubCLIP(), no_text=True,
+                          disable_ffblock=True, disable_fdblock=True)
+    model.eval()
+
+    A = torch.randn(1, 3, 64, 64)
+    B = torch.randn(1, 3, 64, 64)
+    text = torch.zeros(1, 77, dtype=torch.long)  # content ignored under no_text
+
+    with torch.no_grad():
+        out = model(A, B, text)
+
+    assert len(out) == 5
+    names = ("fused", "recon_ir", "recon_vis", "recon_dec_ir", "recon_dec_vis")
+    for name, o in zip(names, out):
+        assert o.shape == (1, 3, 64, 64), f"{name} shape {tuple(o.shape)}"
+        assert torch.isfinite(o).all(), f"{name} has non-finite values"
