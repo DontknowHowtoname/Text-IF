@@ -34,3 +34,11 @@ def test_model_ablations_map_kwargs():
     for name in ("no_fdblock", "no_text", "ff_feature_fusion"):
         r = resolve_ablation(_args(name))
         assert r["model_kwargs"] == ABLATION_MODEL_KWARGS[name]
+
+
+def test_v5_rejects_non_full_ablation():
+    import pytest
+    a = _args("no_text")
+    a.model_version = "v5"
+    with pytest.raises(ValueError):
+        resolve_ablation(a)

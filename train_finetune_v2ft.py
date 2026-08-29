@@ -53,6 +53,9 @@ def resolve_ablation(args):
     name = args.ablation
     if name not in ABLATION_MODEL_KWARGS:
         raise ValueError(f"Unknown --ablation: {name}")
+    if getattr(args, "model_version", "v2") == "v5" and name != "full":
+        raise ValueError("--ablation is only supported for --model_version v2 "
+                         "(v5 is out of scope for the §4.3 ablation)")
     return {
         "model_kwargs": dict(ABLATION_MODEL_KWARGS[name]),
         "freeze_encoders": name != "unfreeze_encoder",
@@ -166,6 +169,7 @@ def main(args):
         model = create_model(model_clip, **abl["model_kwargs"]).to(device)
 
     # Freeze CLIP + encoders (skipped for the unfreeze_encoder ablation)
+    # unfreeze_encoder arm intentionally unfreezes CLIP as well ("全量微调")
     if abl["freeze_encoders"]:
         for param in model.base.model_clip.parameters():
             param.requires_grad = False
@@ -200,7 +204,7 @@ def main(args):
 
     replay_status = f"ON (ratio={args.replay_ratio})" if ems_loader is not None else "OFF"
     print(f"Fine-tuning {args.model_version} on {args.dataset_name} | replay={replay_status} | "
-          f"lr={args.lr} epochs={args.epochs} recon_weight={args.recon_weight}")
+          f"lr={args.lr} epochs={args.epochs} recon_weight={abl['recon_weight']} | ablation={args.ablation}")
 
     best_val_loss = 1e5
     start_epoch = 0
@@ -283,6 +287,6 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--gpu_id", default="0")
     parser.add_argument("--output_dir", default=None,
-                        help="Override default ./experiments/finetune_<v>_<dataset>_<timestamp>")
+                        help="Override default ./experiments/ablation_<arm>_<dataset>_<timestamp>")
     args = parser.parse_args()
     main(args)
