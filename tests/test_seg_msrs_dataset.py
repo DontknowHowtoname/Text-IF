@@ -1,9 +1,11 @@
 # tests/test_seg_msrs_dataset.py
+import random
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1] / "dataset" / "MSRS-main"
 
@@ -33,3 +35,45 @@ def test_train_crop_shape():
     img, label = ds[0]
     assert img.shape == (3, 480, 480)
     assert label.shape == (480, 480)
+
+
+def test_train_aug_uses_nearest_label_and_ignore_pad():
+    from seg_msrs.dataset import MSRSSegDataset
+    # item 0 is 00001D.png, whose label has uniques {0, 1, 2, 3} (>=2 classes,
+    # so a BILINEAR label resize would interpolate ids outside that set)
+    lbl_path = ROOT / "train" / "Segmentation_labels" / "00001D.png"
+    orig_uniques = set(torch.unique(
+        torch.as_tensor(np.array(Image.open(lbl_path)))).tolist())
+    assert len(orig_uniques) >= 3, "reference label must be multi-class for this check"
+
+    random.seed(0)
+    ds = MSRSSegDataset(ROOT, split="train", train=True,
+                        scale_range=(0.5, 0.5), crop_size=480)
+    for _ in range(5):
+        img, label = ds[0]
+        uniques = torch.unique(label)
+        # downscale + pad with ignore_index must introduce the 255 padding
+        assert 255 in uniques
+        # all non-255 ids stay in the valid class range
+        valid = uniques[uniques != 255]
+        assert (valid >= 0).all() and (valid <= 8).all()
+        # NEAREST resize keeps ids within the original label's value set;
+        # BILINEAR would interpolate ids outside orig_uniques
+        assert set(uniques.tolist()) <= (orig_uniques | {255})
+
+
+def test_dataloader_windows_spawn_smoke():
+    from torch.utils.data import DataLoader
+    from seg_msrs.dataset import MSRSSegDataset
+    ds = MSRSSegDataset(ROOT, split="test", train=False)
+    loader = DataLoader(ds, batch_size=4, num_workers=2)
+    for img, label in loader:
+        assert img.shape == (img.shape[0], 3, 480, 640)
+        assert label.shape == (label.shape[0], 480, 640)
+        break
+    batches = 0
+    for img, label in loader:
+        batches += 1
+        if batches == 2:
+            break
+    assert batches == 2
