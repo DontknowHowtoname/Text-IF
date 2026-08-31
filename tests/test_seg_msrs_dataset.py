@@ -1,4 +1,5 @@
 # tests/test_seg_msrs_dataset.py
+import os
 import random
 from pathlib import Path
 
@@ -39,18 +40,24 @@ def test_train_crop_shape():
 
 def test_train_aug_uses_nearest_label_and_ignore_pad():
     from seg_msrs.dataset import MSRSSegDataset
-    # item 0 is 00001D.png, whose label has uniques {0, 1, 2, 3} (>=2 classes,
-    # so a BILINEAR label resize would interpolate ids outside that set)
-    lbl_path = ROOT / "train" / "Segmentation_labels" / "00001D.png"
-    orig_uniques = set(torch.unique(
-        torch.as_tensor(np.array(Image.open(lbl_path)))).tolist())
-    assert len(orig_uniques) >= 3, "reference label must be multi-class for this check"
-
-    random.seed(0)
+    # 00002D.png's label has NON-CONTIGUOUS uniques {0, 1, 2, 4}: a BILINEAR
+    # label resize would interpolate id 3 at class boundaries, so the subset
+    # assertion below actually catches a NEAREST -> BILINEAR regression.
+    # (00001D.png has contiguous {0, 1, 2, 3} and cannot catch it.)
+    ref_name = "00002D.png"
     ds = MSRSSegDataset(ROOT, split="train", train=True,
                         scale_range=(0.5, 0.5), crop_size=480)
+    idx = next(i for i, (_, lbl) in enumerate(ds.items)
+               if os.path.basename(lbl) == ref_name)
+    orig_uniques = set(torch.unique(
+        torch.as_tensor(np.array(Image.open(ds.items[idx][1])))).tolist())
+    assert len(orig_uniques) >= 3, "reference label must be multi-class for this check"
+    assert orig_uniques != set(range(len(orig_uniques))), \
+        "reference label ids must be non-contiguous for this check"
+
+    random.seed(0)
     for _ in range(5):
-        img, label = ds[0]
+        img, label = ds[idx]
         uniques = torch.unique(label)
         # downscale + pad with ignore_index must introduce the 255 padding
         assert 255 in uniques
