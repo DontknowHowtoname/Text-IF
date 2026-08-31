@@ -32,7 +32,7 @@ def build_optimizer(model, lr, wd):
             continue
         if name.startswith("decode_head"):
             head.append(p)
-        elif p.ndim <= 1 or "proj" in name.split("."):
+        elif p.ndim <= 1 or (any(t.startswith("patch_embed") for t in name.split(".")) and "proj" in name.split(".")):
             no_decay.append(p)
         else:
             decay.append(p)
