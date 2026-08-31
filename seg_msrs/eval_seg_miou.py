@@ -34,6 +34,11 @@ class ConfusionMeter:
         pred, label = pred.flatten(), label.flatten()
         mask = (pred != self.ignore) & (label != self.ignore)
         pred, label = pred[mask].numpy(), label[mask].numpy()
+        if pred.size and (pred.max() >= self.k or label.max() >= self.k
+                          or pred.min() < 0 or label.min() < 0):
+            raise ValueError(
+                f"values outside [0, {self.k}) found: pred [{pred.min()}, {pred.max()}], "
+                f"label [{label.min()}, {label.max()}] — check GT encoding / num_classes")
         idx = pred * self.k + label  # conf[pred, label]
         counts = np.bincount(idx, minlength=self.k * self.k)
         self.conf += counts.reshape(self.k, self.k)
@@ -46,6 +51,15 @@ def confusion_to_iou(conf):
     return iou
 
 
+def _summarize(conf):
+    """(mIoU, per-class dict) from a confusion matrix; NaN IoU -> None."""
+    iou = confusion_to_iou(conf)
+    miou = float(np.nanmean(iou))
+    per_class = {c: (None if np.isnan(v) else round(float(v), 4))
+                 for c, v in zip(CLASSES, iou)}
+    return miou, per_class
+
+
 @torch.no_grad()
 def evaluate(model, loader, device, num_classes=9):
     model.eval()
@@ -54,11 +68,7 @@ def evaluate(model, loader, device, num_classes=9):
         logits = model(imgs.to(device))
         pred = logits.argmax(1).cpu()
         meter.update(pred, labels)
-    iou = confusion_to_iou(meter.conf)
-    miou = float(np.nanmean(iou))
-    per_class = {c: (None if np.isnan(v) else round(float(v), 4))
-                 for c, v in zip(CLASSES, iou)}
-    return miou, per_class
+    return _summarize(meter.conf)
 
 
 def write_results(out_dir, miou, per_class, name="eval"):
@@ -89,7 +99,8 @@ def main():
         loader = DataLoader(ds, batch_size=4)
         miou, per_class = evaluate(model, loader, device)
     else:
-        assert args.images, "--images required for mode=dir"
+        if not args.images:
+            ap.error("--images is required for --mode dir")
         ds = ImageDirDataset(args.images)
         loader = DataLoader(ds, batch_size=4)
         lbl_dir = os.path.join(args.data_root, "test", "Segmentation_labels")
@@ -112,14 +123,18 @@ def main():
                     meter.update(pred[i], label)
                     if args.save_pred:
                         os.makedirs(args.save_pred, exist_ok=True)
+                        # always save class-index maps as lossless PNG,
+                        # regardless of the input filename extension
+                        out_name = os.path.splitext(name)[0] + ".png"
                         Image.fromarray(pred[i].numpy().astype(np.uint8)).save(
-                            os.path.join(args.save_pred, name))
+                            os.path.join(args.save_pred, out_name))
         if missing:
             print(f"WARNING: {len(missing)} images without GT skipped: {missing[:10]}")
-        iou = confusion_to_iou(meter.conf)
-        miou = float(np.nanmean(iou))
-        per_class = {c: (None if np.isnan(v) else round(float(v), 4))
-                     for c, v in zip(CLASSES, iou)}
+        if meter.conf.sum() == 0:
+            raise RuntimeError(
+                "no images evaluated — check that fused image filenames match "
+                "test/Segmentation_labels")
+        miou, per_class = _summarize(meter.conf)
 
     write_results(args.out, miou, per_class)
     print(f"mIoU: {miou:.4f}")
