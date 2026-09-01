@@ -75,7 +75,7 @@ def fig2_weights(ir: np.ndarray, vi: np.ndarray, name: str, out: Path,
     for t in taus:
         w_ir = temp_weight(v_ir, v_vi, t)
         panels.append((f"W_ir (tau={t})", w_ir, "coolwarm"))
-        panels.append((f"W_vi (tau={t})", 1.0 - w_ir, "coolwarm_r"))
+        panels.append((f"W_vi (tau={t})", 1.0 - w_ir, "coolwarm"))
     n = len(panels)
     ncol = 4
     nrow = (n + ncol - 1) // ncol
