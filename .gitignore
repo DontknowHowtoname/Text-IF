@@ -16,3 +16,4 @@ sweeps/out/**
 .worktrees/
 seg_msrs/runs/
 seg_msrs/eval_out/
+localvar_weight_probe/out/
