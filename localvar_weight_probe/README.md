@@ -17,7 +17,7 @@ D:/software/anaconda3/envs/xpu/python.exe localvar_weight_probe/probe_localvar.p
   --images 00099D.png 00016N.png --win 7 --taus 0.05 0.1 0.5 1.0 10 1000
 ```
 
-输出三组图到 `out/`：`*_fig1_texture.png`（四联提取验证）、`*_fig2_weights.png`（各 τ 权重网格）、`*_fig3_fusion.png`（梯度域硬/软融合对比）。
+输出四组图到 `out/`：`*_fig1_texture.png`（四联提取验证）、`*_fig2_weights.png`（各 τ 的 W_ir/W_vi 互补权重网格）、`*_fig3_fusion.png`（梯度域硬/软融合对比）、`*_fig4_fusion_img.png`（图像域融合 F = W_ir·IR + W_vi·VI，硬 max vs 软 τ=0.5，附原模态参考）。
 
 ## 测试
 

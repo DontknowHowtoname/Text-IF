@@ -69,11 +69,13 @@ def fig1_texture(gray: np.ndarray, name: str, out: Path, win: int) -> None:
 
 def fig2_weights(ir: np.ndarray, vi: np.ndarray, name: str, out: Path,
                  win: int, taus: list[float]) -> None:
-    """图2：V_ir | V_vi | 各 τ 的 W_ir，验证极限行为与平滑过渡。"""
+    """图2：V_ir | V_vi | 各 τ 的 W_ir 与 W_vi，验证极限行为与平滑过渡。"""
     v_ir, v_vi = local_variance(ir, win=win), local_variance(vi, win=win)
     panels = [("V_ir", v_ir, "magma"), ("V_vi", v_vi, "magma")]
     for t in taus:
-        panels.append((f"W_ir (tau={t})", temp_weight(v_ir, v_vi, t), "coolwarm"))
+        w_ir = temp_weight(v_ir, v_vi, t)
+        panels.append((f"W_ir (tau={t})", w_ir, "coolwarm"))
+        panels.append((f"W_vi (tau={t})", 1.0 - w_ir, "coolwarm_r"))
     n = len(panels)
     ncol = 4
     nrow = (n + ncol - 1) // ncol
@@ -111,6 +113,26 @@ def fig3_fusion(ir: np.ndarray, vi: np.ndarray, name: str, out: Path,
     plt.close(fig)
 
 
+def fig4_fusion_img(ir: np.ndarray, vi: np.ndarray, name: str, out: Path,
+                    win: int, tau_soft: float = 0.5) -> None:
+    """图4：图像域融合 F = W_ir·IR + W_vi·VI，硬 max vs 软权重，附原模态参考。"""
+    v_ir, v_vi = local_variance(ir, win=win), local_variance(vi, win=win)
+    w_hard = (v_ir > v_vi).astype(np.float64)
+    w_soft = temp_weight(v_ir, v_vi, tau_soft)
+    f_hard = np.clip(w_hard * ir + (1 - w_hard) * vi, 0.0, 1.0)
+    f_soft = np.clip(w_soft * ir + (1 - w_soft) * vi, 0.0, 1.0)
+    panels = [("IR", ir, "gray"), ("VI", vi, "gray"),
+              ("fused img, tau=0 (hard max)", f_hard, "gray"),
+              (f"fused img, tau={tau_soft} (soft)", f_soft, "gray")]
+    fig, axes = plt.subplots(1, 4, figsize=(18, 4.5))
+    for ax, (title, img, cmap) in zip(axes, panels):
+        ax.imshow(img, cmap=cmap, vmin=0, vmax=1); ax.set_title(title); ax.axis("off")
+    fig.suptitle(f"[4] image-domain fusion - {name}")
+    fig.tight_layout()
+    fig.savefig(out / f"{name}_fig4_fusion_img.png", dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--images", nargs="+", default=["00099D.png", "00016N.png"],
@@ -129,7 +151,8 @@ def main() -> None:
         fig1_texture(vi, stem, args.out, args.win)
         fig2_weights(ir, vi, stem, args.out, args.win, args.taus)
         fig3_fusion(ir, vi, stem, args.out, args.win)
-        print(f"[done] {stem}: 3 figures -> {args.out}")
+        fig4_fusion_img(ir, vi, stem, args.out, args.win)
+        print(f"[done] {stem}: 4 figures -> {args.out}")
 
 
 if __name__ == "__main__":
