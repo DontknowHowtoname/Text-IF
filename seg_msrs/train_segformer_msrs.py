@@ -48,6 +48,24 @@ def lr_at(step, total, base_lr, warmup=1500, power=1.0):
     return base_lr * (1 - step / total) ** power
 
 
+def read_resume_state(out_dir):
+    """Return (start_epoch, best_miou) from an interrupted run directory.
+
+    start_epoch = last CSV epoch + 1; best_miou from best_miou.json (or -1.0 if absent).
+    Raises FileNotFoundError if train_log.csv is missing.
+    """
+    log_path = os.path.join(out_dir, "train_log.csv")
+    with open(log_path, newline="") as f:
+        rows = list(csv.reader(f))
+    last_epoch = int(rows[-1][0]) if rows else 0
+    best_path = os.path.join(out_dir, "best_miou.json")
+    best = -1.0
+    if os.path.exists(best_path):
+        with open(best_path) as f:
+            best = float(json.load(f)["mIoU"])
+    return last_epoch + 1, best
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-root", default="dataset/MSRS-main")
@@ -63,6 +81,10 @@ def main():
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0, help="debug: cap train images")
     ap.add_argument("--out", default="seg_msrs/runs/segformer_b1")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume the run found in --out (loads last.pth, appends to "
+                         "train_log.csv, keeps best_miou.pth unless improved; optimizer "
+                         "moments reset; LR is near zero at typical resume points)")
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -81,17 +103,23 @@ def main():
                           pin_memory=False)
     val_ld = DataLoader(val_ds, batch_size=4, num_workers=args.num_workers)
 
-    model = SegFormerSeg(num_classes=9, pretrained=args.pretrained).to(device)
+    log_path = os.path.join(args.out, "train_log.csv")
+    if args.resume:
+        start_epoch, best = read_resume_state(args.out)
+        model = SegFormerSeg(num_classes=9, pretrained=None).to(device)
+        model.load_state_dict(
+            torch.load(os.path.join(args.out, "last.pth"), map_location=device),
+            strict=True)
+    else:
+        start_epoch, best = 0, -1.0
+        model = SegFormerSeg(num_classes=9, pretrained=args.pretrained).to(device)
+        with open(log_path, "w", newline=""):
+            pass
     criterion = nn.CrossEntropyLoss(ignore_index=255)
     optimizer = build_optimizer(model, args.lr, args.wd)
     total_iters = args.epochs * len(train_ld)
-
-    log_path = os.path.join(args.out, "train_log.csv")
-    with open(log_path, "w", newline=""):
-        pass
-    best = -1.0
-    step = 0
-    for epoch in range(args.epochs):
+    step = start_epoch * len(train_ld)
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         running = 0.0
         for imgs, labels in train_ld:
