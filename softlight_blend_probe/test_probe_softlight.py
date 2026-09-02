@@ -88,3 +88,12 @@ def test_fuse_invalid_order_raises():
     from probe_softlight import fuse
     with pytest.raises(ValueError):
         fuse(np.random.rand(4, 4), np.random.rand(4, 4, 3), order="bad", alpha=0.8)
+
+
+def test_fuse_alpha_zero_semantics():
+    """α=0 时柔光退化为 base：ir_on_vi 返回 vi，vi_on_ir 返回 repeat(ir,3)。"""
+    from probe_softlight import fuse
+    ir = np.random.rand(8, 8)
+    vi = np.random.rand(8, 8, 3)
+    np.testing.assert_allclose(fuse(ir, vi, "ir_on_vi", 0.0), vi, atol=1e-12)
+    np.testing.assert_allclose(fuse(ir, vi, "vi_on_ir", 0.0), np.repeat(ir[..., None], 3, axis=2), atol=1e-12)

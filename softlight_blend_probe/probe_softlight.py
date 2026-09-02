@@ -4,7 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import cv2
+import matplotlib
 import numpy as np
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402  (须在 matplotlib.use 之后)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -35,7 +39,10 @@ DATASET_DIRS = {
 
 
 def load_pair(dataset: str, name: str) -> tuple[np.ndarray, np.ndarray]:
-    """读取 ir(灰度 HxW) / vi(彩色 HxWx3)，float64 [0,1]。vi 若本身是灰度则转 3 通道。"""
+    """读取 ir(灰度 HxW) / vi(彩色 HxWx3)，float64 [0,1]。vi 若本身是灰度则转 3 通道。
+
+    返回值为 RGB 色彩空间（cv2 读入的 BGR 已转换）。
+    """
     ir_dir, vi_dir = DATASET_DIRS[dataset]
     ir = cv2.imread(str(ir_dir / f"{name}.png"), cv2.IMREAD_GRAYSCALE)
     vi = cv2.imread(str(vi_dir / f"{name}.png"), cv2.IMREAD_COLOR)
@@ -48,7 +55,7 @@ def load_pair(dataset: str, name: str) -> tuple[np.ndarray, np.ndarray]:
 def fuse(ir: np.ndarray, vi: np.ndarray, order: str, alpha: float) -> np.ndarray:
     """柔光融合。order='ir_on_vi': base=vi(彩色), blend=ir；'vi_on_ir': 反向。
 
-    返回 HxWx3 float [0,1]。
+    输入/返回均为 RGB 色彩空间，输出 HxWx3 float [0,1]。
     """
     if order == "ir_on_vi":
         base, blend = vi, ir[..., None]          # blend 广播到 3 通道
@@ -57,3 +64,39 @@ def fuse(ir: np.ndarray, vi: np.ndarray, order: str, alpha: float) -> np.ndarray
     else:
         raise ValueError(f"unknown order: {order}")
     return softlight_blend(base, blend, alpha)
+
+
+def to_uint8(img: np.ndarray) -> np.ndarray:
+    return (np.clip(img, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+
+
+def fig_compare(dataset: str, name: str, ir: np.ndarray, vi: np.ndarray,
+                fused: np.ndarray, t5_path: Path, out: Path) -> None:
+    """四联对比：IR | VI | 柔光(选定配置) | T5。"""
+    t5 = plt.imread(str(t5_path))            # matplotlib 直接读 RGB
+    if t5.ndim == 2:
+        t5 = np.stack([t5] * 3, axis=2)
+    panels = [("IR", ir, "gray"), ("VI", vi, None),
+              ("SoftLight", fused, None), ("Text-IF T5", t5, None)]
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5.5))
+    for ax, (title, img, cmap) in zip(axes, panels):
+        ax.imshow(img, cmap=cmap); ax.set_title(title); ax.axis("off")
+    fig.suptitle(f"softlight vs T5 - {dataset}/{name}")
+    fig.tight_layout()
+    fig.savefig(out / f"{name}_compare.png", dpi=150)
+    plt.close(fig)
+
+
+def fig_grid(dataset: str, name: str, ir: np.ndarray, vi: np.ndarray,
+             orders: list[str], alphas: list[float], out: Path) -> None:
+    """配置网格：2 层序 × N α，便于挑参数。"""
+    fig, axes = plt.subplots(len(orders), len(alphas), figsize=(4.5 * len(alphas), 4.5 * len(orders)))
+    axes = np.atleast_2d(axes)
+    for i, order in enumerate(orders):
+        for j, alpha in enumerate(alphas):
+            axes[i, j].imshow(fuse(ir, vi, order, alpha))
+            axes[i, j].set_title(f"{order} α={alpha}"); axes[i, j].axis("off")
+    fig.suptitle(f"softlight config grid - {dataset}/{name}")
+    fig.tight_layout()
+    fig.savefig(out / f"{name}_grid.png", dpi=150)
+    plt.close(fig)
