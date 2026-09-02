@@ -29,14 +29,16 @@ def test_blend_black_darkens():
 
 
 def test_opacity_zero_returns_base():
-    base = np.random.rand(8, 8)
-    blend = np.random.rand(8, 8)
+    rng = np.random.default_rng(1)
+    base = rng.random((8, 8))
+    blend = rng.random((8, 8))
     np.testing.assert_allclose(softlight_blend(base, blend, 0.0), base, atol=1e-12)
 
 
 def test_opacity_one_equals_raw_softlight():
-    base = np.random.rand(8, 8)
-    blend = np.random.rand(8, 8)
+    rng = np.random.default_rng(1)
+    base = rng.random((8, 8))
+    blend = rng.random((8, 8))
     np.testing.assert_allclose(softlight_blend(base, blend, 1.0), softlight(base, blend), atol=1e-12)
 
 
@@ -44,3 +46,21 @@ def test_output_range():
     rng = np.random.default_rng(0)
     out = softlight(rng.random((16, 16)), rng.random((16, 16)))
     assert out.min() >= 0.0 and out.max() <= 1.0
+
+
+def test_softlight_closed_form_low_base():
+    """b<=0.25 分支：blend=1 时 out=D(b)=16b^3-12b^2+4b。"""
+    assert softlight(np.array(0.09), np.array(1.0)) == pytest.approx(16*0.09**3 - 12*0.09**2 + 4*0.09, abs=1e-12)
+
+
+def test_softlight_closed_form_high_base():
+    """b>0.25 分支：blend=1 时 out=D(b)=sqrt(b)。"""
+    assert softlight(np.array(0.5), np.array(1.0)) == pytest.approx(np.sqrt(0.5), abs=1e-12)
+
+
+def test_softlight_continuous_at_quarter():
+    """两分支在 b=0.25 处均等于 0.5，公式连续。"""
+    eps = 1e-9
+    lo = softlight(np.array(0.25 - eps), np.array(0.7))
+    hi = softlight(np.array(0.25 + eps), np.array(0.7))
+    assert lo == pytest.approx(hi, abs=1e-6)

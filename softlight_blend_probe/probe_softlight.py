@@ -1,23 +1,9 @@
-"""Soft-light (PS/W3C) blend probe: 柔光混合用于红外/可见光融合的初步验证。"""
+"""Soft-light (W3C) blend probe: 柔光混合用于红外/可见光融合的初步验证。"""
 from __future__ import annotations
 
-import argparse
-import csv
-import sys
 from pathlib import Path
 
-import cv2
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
-
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-METRIC_DIR = REPO_ROOT / "metric"
-if str(METRIC_DIR) not in sys.path:
-    sys.path.insert(0, str(METRIC_DIR))
 
 
 def softlight(base: np.ndarray, blend: np.ndarray) -> np.ndarray:
