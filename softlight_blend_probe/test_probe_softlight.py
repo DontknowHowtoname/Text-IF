@@ -64,3 +64,27 @@ def test_softlight_continuous_at_quarter():
     lo = softlight(np.array(0.25 - eps), np.array(0.7))
     hi = softlight(np.array(0.25 + eps), np.array(0.7))
     assert lo == pytest.approx(hi, abs=1e-6)
+
+
+def test_fuse_ir_on_vi_shape_and_range():
+    """主层序(base=vi, blend=ir)：彩色 vi 逐通道用同一 ir blend，输出形状/范围正确。"""
+    from probe_softlight import fuse
+    ir = np.random.rand(8, 8)
+    vi = np.random.rand(8, 8, 3)
+    out = fuse(ir, vi, order="ir_on_vi", alpha=0.8)
+    assert out.shape == (8, 8, 3)
+    assert out.min() >= 0.0 and out.max() <= 1.0
+
+
+def test_fuse_reverse_order():
+    from probe_softlight import fuse
+    ir = np.random.rand(8, 8)
+    vi = np.random.rand(8, 8, 3)
+    out = fuse(ir, vi, order="vi_on_ir", alpha=1.0)
+    assert out.shape == (8, 8, 3)
+
+
+def test_fuse_invalid_order_raises():
+    from probe_softlight import fuse
+    with pytest.raises(ValueError):
+        fuse(np.random.rand(4, 4), np.random.rand(4, 4, 3), order="bad", alpha=0.8)
