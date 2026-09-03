@@ -17,7 +17,7 @@ SOFTLIGHT_DIR = REPO_ROOT / "softlight_blend_probe"
 if str(SOFTLIGHT_DIR) not in sys.path:
     sys.path.insert(0, str(SOFTLIGHT_DIR))
 
-import probe_softlight as sl  # noqa: F401,E402  (复用指标/IO/柔光，不复制)
+import probe_softlight as sl  # noqa: E402  (复用指标/IO/柔光，不复制)
 
 
 def highlight_mask(ir: np.ndarray, alpha: float, mu: float | None = None) -> np.ndarray:
@@ -59,3 +59,25 @@ def fuse_screen(ir: np.ndarray, vi: np.ndarray, alpha: float, sigma: float,
     h_high = (m * high)[..., None]
     fused = screen(vi, h_low) + beta * h_high
     return np.clip(fused, 0.0, 1.0)
+
+
+LOWER_BETTER = {"Nabf"}
+
+
+def select_best_grid(records: list[dict], keys: tuple[str, ...]) -> tuple:
+    """rank 选优（泛化版）：每指标在配置间取均值后排名打分，总分最高胜出。
+
+    配置键由 keys 指定（本探针为 ("alpha","sigma","beta")）。
+    前置条件：records 须为同一 method 的记录，且包含全部 PROBE_METRICS 键。
+    """
+    configs = sorted({tuple(r[k] for k in keys) for r in records})
+    scores = {c: 0 for c in configs}
+    for m in sl.PROBE_METRICS:
+        avg = {c: float(np.mean([r[m] for r in records
+                                 if tuple(r[k] for k in keys) == c])) for c in configs}
+        lower = m in LOWER_BETTER
+        # 平局感知：得分 = 严格劣于自己的配置数（并列均不得分，无平局时等价于 N-1-rank）
+        for c in configs:
+            scores[c] += sum((avg[c] < avg[d]) if lower else (avg[c] > avg[d])
+                             for d in configs if d != c)
+    return max(scores, key=scores.get)

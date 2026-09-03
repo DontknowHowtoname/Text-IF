@@ -68,7 +68,10 @@ def test_fuse_screen_shape_and_range():
 
 
 def test_fuse_screen_zero_highfreq_and_dark_ir_returns_vi():
-    """beta=0 且红外全暗（蒙版≈0，低频=0）时，滤色恒等，退化为 VI。"""
+    """beta=0 且红外全暗 → low=high=0 → 滤色 blend=0 → 恒等退化为 VI。
+
+    注：此时蒙版实为 0.5，本测试不覆盖蒙版抑制路径。
+    """
     from probe_screen import fuse_screen
     vi = np.random.default_rng(6).random((8, 8, 3))
     ir = np.zeros((8, 8))
@@ -83,3 +86,23 @@ def test_fuse_screen_brightens():
     vi = np.full((16, 16, 3), 0.5)
     out = fuse_screen(ir, vi, alpha=8.0, sigma=3.0, beta=0.5)
     assert out.mean() > vi.mean()
+
+
+def test_select_best_grid_prefers_higher_metrics():
+    from probe_screen import select_best_grid
+    # 两个配置，A 在所有 higher-better 指标上均值更高，应胜出
+    metrics = {m: 1.0 for m in ["EN", "MI", "SF", "AG", "SD", "VIF", "SSIM", "Qabf", "SCD"]}
+    metrics["Nabf"] = 0.0
+    rec_a = {"alpha": 4.0, "sigma": 3.0, "beta": 0.5, **metrics}
+    rec_b = {"alpha": 8.0, "sigma": 9.0, "beta": 1.0, **{k: v / 2 for k, v in metrics.items()}}
+    best = select_best_grid([rec_a, rec_b], keys=("alpha", "sigma", "beta"))
+    assert best == (4.0, 3.0, 0.5)
+
+
+def test_select_best_grid_nabf_lower_better():
+    from probe_screen import select_best_grid
+    base = {m: 1.0 for m in ["EN", "MI", "SF", "AG", "SD", "VIF", "SSIM", "Qabf", "SCD"]}
+    rec_a = {"alpha": 4.0, "sigma": 3.0, "beta": 0.5, **base, "Nabf": 0.9}
+    rec_b = {"alpha": 8.0, "sigma": 9.0, "beta": 1.0, **base, "Nabf": 0.1}
+    best = select_best_grid([rec_a, rec_b], keys=("alpha", "sigma", "beta"))
+    assert best == (8.0, 9.0, 1.0)
