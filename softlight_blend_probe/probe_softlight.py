@@ -1,6 +1,7 @@
 """Soft-light (W3C) blend probe: 柔光混合用于红外/可见光融合的初步验证。"""
 from __future__ import annotations
 
+import argparse
 import csv
 import sys
 from pathlib import Path
@@ -95,7 +96,7 @@ def fig_compare(dataset: str, name: str, ir: np.ndarray, vi: np.ndarray,
     for ax, (title, img, cmap) in zip(axes, panels):
         ax.imshow(img, cmap=cmap); ax.set_title(title); ax.axis("off")
     fig.suptitle(f"softlight vs T5 - {dataset}/{name}")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(out / f"{name}_compare.png", dpi=150)
     plt.close(fig)
 
@@ -110,7 +111,7 @@ def fig_grid(dataset: str, name: str, ir: np.ndarray, vi: np.ndarray,
             axes[i, j].imshow(fuse(ir, vi, order, alpha))
             axes[i, j].set_title(f"{order} α={alpha}"); axes[i, j].axis("off")
     fig.suptitle(f"softlight config grid - {dataset}/{name}")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(out / f"{name}_grid.png", dpi=150)
     plt.close(fig)
 
@@ -157,6 +158,8 @@ def compute_metrics(ir: np.ndarray, vi: np.ndarray, fused_rgb: np.ndarray) -> di
 def select_best_config(records: list[dict]) -> tuple[str, float]:
     """从逐图记录中选指标最优配置。
 
+    前置条件：records 须全部为 method='softlight' 的记录（调用方负责过滤，混入 T5 记录会静默污染排名）。
+
     规则：每个 higher-better 指标（除 Nabf 外全部）在配置间做平均、按名次打分
     （rank 1 得 N-1 分 ... rank N 得 0 分），总分最高的配置胜出。
     """
@@ -176,3 +179,91 @@ def save_metrics_csv(records: list[dict], path: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
         writer.writerows(records)
+
+
+def load_pair_t5(ds: str, name: str, t5_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """读取 ir/vi 并对齐到 T5 融合图尺寸，返回 (ir, vi, t5_img)。
+
+    T5 推理管线（evaluate_textif_full_recon_v2.resize_to_multiple_of_16）会把输入
+    双线性 resize 到 16 的倍数（如 TNO 381x461 -> 368x448），因此指标计算前须将
+    ir/vi 对齐到 T5 输出尺寸，否则 ir/vi/fused 形状不一致。
+    """
+    ir, vi = load_pair(ds, name)
+    t5_img = np.asarray(plt.imread(str(t5_path)))
+    if t5_img.ndim == 2:
+        t5_img = np.stack([t5_img] * 3, axis=2)
+    if t5_img.max() > 1.5:
+        t5_img = t5_img / 255.0
+    th, tw = t5_img.shape[:2]
+    if ir.shape[:2] != (th, tw):
+        ir = cv2.resize(ir, (tw, th), interpolation=cv2.INTER_LINEAR)
+        vi = cv2.resize(vi, (tw, th), interpolation=cv2.INTER_LINEAR)
+    return ir, vi, t5_img
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Soft-light blend fusion probe vs text_ratio_T5")
+    ap.add_argument("--datasets", nargs="+", default=["MSRS", "TNO"])
+    ap.add_argument("--num", type=int, default=3, help="每数据集抽样张数")
+    ap.add_argument("--orders", nargs="+", default=["ir_on_vi", "vi_on_ir"])
+    ap.add_argument("--alphas", nargs="+", type=float, default=[0.6, 0.8, 1.0])
+    ap.add_argument("--t5-root", type=Path, default=REPO_ROOT / "sweeps" / "out" / "text_ratio_T5" / "gen")
+    ap.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "out")
+    args = ap.parse_args()
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    records: list[dict] = []
+
+    for ds in args.datasets:
+        fused_dir = args.t5_root / ds / "fused"
+        names = sorted(f.stem for f in fused_dir.glob("*.png"))[: args.num]
+        print(f"[{ds}] {len(names)} samples: {names}")
+        for name in names:
+            ir, vi, t5_img = load_pair_t5(ds, name, fused_dir / f"{name}.png")
+            fig_grid(ds, name, ir, vi, args.orders, args.alphas, args.out)
+
+            # T5 基线记录
+            m = compute_metrics(ir, vi, t5_img)
+            records.append({"dataset": ds, "name": name, "method": "T5",
+                            "order": "", "alpha": float("nan"), **m})
+
+            # 柔光各配置
+            for order in args.orders:
+                for alpha in args.alphas:
+                    fused = fuse(ir, vi, order, alpha)
+                    m = compute_metrics(ir, vi, fused)
+                    records.append({"dataset": ds, "name": name, "method": "softlight",
+                                    "order": order, "alpha": alpha, **m})
+
+    best_order, best_alpha = select_best_config(
+        [r for r in records if r["method"] == "softlight"])
+    print(f"\nbest config: order={best_order} alpha={best_alpha}")
+
+    # 用最优配置重出四联对比图
+    for ds in args.datasets:
+        fused_dir = args.t5_root / ds / "fused"
+        names = sorted(f.stem for f in fused_dir.glob("*.png"))[: args.num]
+        for name in names:
+            ir, vi, _ = load_pair_t5(ds, name, fused_dir / f"{name}.png")
+            fig_compare(ds, name, ir, vi, fuse(ir, vi, best_order, best_alpha),
+                        fused_dir / f"{name}.png", args.out)
+
+    save_metrics_csv(records, args.out / "metrics.csv")
+
+    # 终端汇总：每方法（含最优配置与 T5）各指标均值
+    print("\n=== metric means over sampled images ===")
+    groups: dict[tuple, list[dict]] = {}
+    for r in records:
+        key = ("T5",) if r["method"] == "T5" else ("softlight", r["order"], r["alpha"])
+        groups.setdefault(key, []).append(r)
+    header = f"{'method':<28}" + "".join(f"{m:>9}" for m in PROBE_METRICS)
+    print(header)
+    for key in sorted(groups, key=str):
+        rows = groups[key]
+        label = "/".join(str(x) for x in key)
+        print(f"{label:<28}" + "".join(f"{np.mean([r[m] for r in rows]):>9.3f}" for m in PROBE_METRICS))
+    print(f"\nsaved: {args.out / 'metrics.csv'}")
+
+
+if __name__ == "__main__":
+    main()
