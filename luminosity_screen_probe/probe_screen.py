@@ -34,6 +34,8 @@ def highlight_mask(ir: np.ndarray, alpha: float, mu: float | None = None) -> np.
 
 def screen(base: np.ndarray, blend: np.ndarray) -> np.ndarray:
     """滤色混合：out = 1 − (1−base)⊙(1−blend)。H=0 → base，H=1 → 1，天然无溢出。"""
+    base = base.astype(np.float64)
+    blend = blend.astype(np.float64)
     return 1.0 - (1.0 - base) * (1.0 - blend)
 
 
@@ -42,3 +44,18 @@ def gaussian_low_high(ir: np.ndarray, sigma: float) -> tuple[np.ndarray, np.ndar
     ir = ir.astype(np.float64)
     low = cv2.GaussianBlur(ir, (0, 0), sigmaX=sigma)
     return low, ir - low
+
+
+def fuse_screen(ir: np.ndarray, vi: np.ndarray, alpha: float, sigma: float,
+                beta: float, mu: float | None = None) -> np.ndarray:
+    """亮度蒙版滤色融合（RGB 返回）。
+
+    F = clip( Screen(V, M⊙I_low) + beta·(M⊙I_high), 0, 1 )
+    低频经滤色"打面光"（无溢出），高频经蒙版选区内加法注入细节。
+    """
+    m = highlight_mask(ir, alpha, mu)
+    low, high = gaussian_low_high(ir, sigma)
+    h_low = (m * low)[..., None]      # (H,W,1) 广播到 VI 三通道
+    h_high = (m * high)[..., None]
+    fused = screen(vi, h_low) + beta * h_high
+    return np.clip(fused, 0.0, 1.0)
