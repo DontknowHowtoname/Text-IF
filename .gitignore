@@ -18,3 +18,4 @@ seg_msrs/runs/
 seg_msrs/eval_out/
 localvar_weight_probe/out/
 softlight_blend_probe/out/
+luminosity_screen_probe/out/
