@@ -235,6 +235,9 @@ def main() -> None:
                     records.append({"dataset": ds, "name": name, "method": "softlight",
                                     "order": order, "alpha": alpha, **m})
 
+    if not records:
+        sys.exit(f"no samples found under {args.t5_root} (check --t5-root / --datasets / --num)")
+
     best_order, best_alpha = select_best_config(
         [r for r in records if r["method"] == "softlight"])
     print(f"\nbest config: order={best_order} alpha={best_alpha}")
