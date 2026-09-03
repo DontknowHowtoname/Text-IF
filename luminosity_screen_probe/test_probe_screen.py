@@ -106,3 +106,52 @@ def test_select_best_grid_nabf_lower_better():
     rec_b = {"alpha": 8.0, "sigma": 9.0, "beta": 1.0, **base, "Nabf": 0.1}
     best = select_best_grid([rec_a, rec_b], keys=("alpha", "sigma", "beta"))
     assert best == (8.0, 9.0, 1.0)
+
+
+def test_select_best_grid_tie_scores_equal():
+    """平局感知排名：得分 = 严格劣于自己的配置数，并列双方均不得分。
+
+    构造 3 配置：A=(1,1,1) 全指标严格最差；B=(2,2,2)、C=(3,3,3) 并列最优。
+    场景 1（完全并列，固定文档化行为，新旧规则均通过）：B、C 在全部 10 个
+    指标上取值相同 → 新规则各得 10 分（每指标仅胜 A），总分平局由 max 取
+    先入序者（字典序最小）→ B 胜。
+    场景 2（部分并列，区分性断言）：C 仅在 EN 上严格更优（1.5 vs 1.0），
+    其余 9 指标仍与 B 并列。
+      新规则：C = 2(EN 胜 B、A) + 9×1(并列指标各胜 A) = 11 > B = 1 + 9 = 10 → C 胜
+      （胜者由严格优劣决定，与配置键/入序无关）。
+      旧规则（sorted 稳定排序 + N-1-rank，即 probe_softlight.select_best_config
+      的规则）：9 个并列指标上字典序小的 B 各得 2 分、C 各得 1 分 →
+      B = 1 + 18 = 19 > C = 2 + 9 = 11 → B 胜。
+    若回退旧规则，断言 best == (3.0, 3.0, 3.0) 必挂（已用等价模拟脚本验证）。
+    """
+    from probe_screen import select_best_grid
+    metrics = ["EN", "MI", "SF", "AG", "SD", "VIF", "SSIM", "Qabf", "Nabf", "SCD"]
+    tie_best = {m: 1.0 for m in metrics}
+    tie_best["Nabf"] = 0.1
+    worst = {m: (0.6 if m == "Nabf" else 0.5) for m in metrics}  # 全指标严格最差
+    rec_a = {"alpha": 1.0, "sigma": 1.0, "beta": 1.0, **worst}
+    rec_b = {"alpha": 2.0, "sigma": 2.0, "beta": 2.0, **dict(tie_best)}
+    rec_c = {"alpha": 3.0, "sigma": 3.0, "beta": 3.0, **dict(tie_best)}
+
+    # 场景 1：完全并列 → 总分相同 → 字典序最小的 B 胜
+    best = select_best_grid([rec_a, rec_b, rec_c], keys=("alpha", "sigma", "beta"))
+    assert best == (2.0, 2.0, 2.0)
+
+    # 场景 2：C 仅 EN 严格更优 → 胜者只由严格优劣决定 → C 胜（旧规则下此处为 B）
+    rec_c["EN"] = 1.5
+    best = select_best_grid([rec_a, rec_b, rec_c], keys=("alpha", "sigma", "beta"))
+    assert best == (3.0, 3.0, 3.0)
+
+
+def test_select_best_grid_averages_across_records():
+    """均值路径：每配置 2 条记录，配置内均值决定排名（B 每条都优于 A 每条）。"""
+    from probe_screen import select_best_grid
+    base = {m: 1.0 for m in ["EN", "MI", "SF", "AG", "SD", "VIF", "SSIM", "Qabf", "SCD"]}
+    recs = [
+        {"alpha": 4.0, "sigma": 3.0, "beta": 0.5, **base, "Nabf": 0.2},
+        {"alpha": 4.0, "sigma": 3.0, "beta": 0.5, **base, "Nabf": 0.4},
+        {"alpha": 8.0, "sigma": 9.0, "beta": 1.0, **{k: v - 0.2 for k, v in base.items()}, "Nabf": 0.1},
+        {"alpha": 8.0, "sigma": 9.0, "beta": 1.0, **{k: v - 0.4 for k, v in base.items()}, "Nabf": 0.3},
+    ]
+    best = select_best_grid(recs, keys=("alpha", "sigma", "beta"))
+    assert best == (4.0, 3.0, 0.5)
