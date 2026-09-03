@@ -81,3 +81,55 @@ def select_best_grid(records: list[dict], keys: tuple[str, ...]) -> tuple:
             scores[c] += sum((avg[c] < avg[d]) if lower else (avg[c] > avg[d])
                              for d in configs if d != c)
     return max(scores, key=scores.get)
+
+
+def fig_mask(dataset: str, name: str, ir: np.ndarray, alphas: list[float], out: Path) -> None:
+    """IR 原图 + 各 α 的高光蒙版（coolwarm，红=1），验证高光选区抓取。"""
+    panels = [("IR", ir, "gray")]
+    panels += [(f"M alpha={a}", highlight_mask(ir, a), "coolwarm") for a in alphas]
+    fig, axes = plt.subplots(1, len(panels), figsize=(4.5 * len(panels), 4.5))
+    for ax, (title, img, cmap) in zip(np.atleast_1d(axes).ravel(), panels):
+        im = ax.imshow(img, cmap=cmap, vmin=0, vmax=1)
+        ax.set_title(title); ax.axis("off")
+        if cmap == "coolwarm":
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle(f"highlight mask - {dataset}/{name}")
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(out / f"{name}_mask.png", dpi=150)
+    plt.close(fig)
+
+
+def fig_grid(dataset: str, name: str, ir: np.ndarray, vi: np.ndarray,
+             alphas: list[float], sigmas: list[float], betas: list[float], out: Path) -> None:
+    """12 配置网格：行 = alpha×sigma，列 = beta。"""
+    rows = [(a, s) for a in alphas for s in sigmas]
+    fig, axes = plt.subplots(len(rows), len(betas),
+                             figsize=(4.5 * len(betas), 4.5 * len(rows)))
+    axes = np.atleast_2d(axes)
+    for i, (a, s) in enumerate(rows):
+        for j, b in enumerate(betas):
+            axes[i, j].imshow(fuse_screen(ir, vi, a, s, b))
+            axes[i, j].set_title(f"α={a} σ={s} β={b}"); axes[i, j].axis("off")
+    fig.suptitle(f"screen config grid - {dataset}/{name}")
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out / f"{name}_grid.png", dpi=150)
+    plt.close(fig)
+
+
+def fig_compare(dataset: str, name: str, ir: np.ndarray, vi: np.ndarray,
+                softlight: np.ndarray, screen_fused: np.ndarray,
+                t5_path: Path, out: Path) -> None:
+    """五联对比：IR | VI | 柔光(ir_on_vi/0.6) | 滤色(最优配置) | T5。"""
+    t5 = plt.imread(str(t5_path))
+    if t5.ndim == 2:
+        t5 = np.stack([t5] * 3, axis=2)
+    panels = [("IR", ir, "gray"), ("VI", vi, None),
+              ("SoftLight", softlight, None), ("Screen", screen_fused, None),
+              ("Text-IF T5", t5, None)]
+    fig, axes = plt.subplots(1, 5, figsize=(25, 5.5))
+    for ax, (title, img, cmap) in zip(axes, panels):
+        ax.imshow(img, cmap=cmap); ax.set_title(title); ax.axis("off")
+    fig.suptitle(f"screen vs softlight vs T5 - {dataset}/{name}")
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.savefig(out / f"{name}_compare.png", dpi=150)
+    plt.close(fig)
