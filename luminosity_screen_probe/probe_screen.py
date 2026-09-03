@@ -9,8 +9,8 @@ from pathlib import Path
 import cv2
 import matplotlib
 
-matplotlib.use("Agg")  # noqa: E402  (必须在 pyplot 之前；matplotlib 供后续出图任务使用)
-import matplotlib.pyplot as plt  # noqa: F401  (后续任务使用)
+matplotlib.use("Agg")  # noqa: E402  (必须在 pyplot 之前)
+import matplotlib.pyplot as plt
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
