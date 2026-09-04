@@ -1,0 +1,1 @@
+从 references\SegFormer 中参考调整而来，主要去掉了mmcv的支持，并且兼容了xpu训练
